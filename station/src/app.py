@@ -11,6 +11,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -19,9 +20,10 @@ import tty
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ccactions import cx_set_demo
 from cckeys import cc_key, cc_pointer
 from collect import Collector, GlobalCollector, files_page, lead_page, set_override
-from demo import DemoCollector
+from demo import DemoCollector, DemoGlobalCollector, demo_page_lines
 from model import (
     DONE,
     FAILED,
@@ -70,6 +72,7 @@ from render import (
 )
 from sessionview import _sv_key
 from titleart import _ta_PNG_B64, _ta_SIZE
+from tutorial import tut_after_key, tut_key, tut_start
 from web import run_serve
 from webdata import (
     contract_document,
@@ -222,11 +225,20 @@ def _ap_help_key(ui: UIState, key: str) -> bool:
 
 
 def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
+    """One key in the global view. In the tutorial the step card sees it first."""
+    if ui.tut >= 0 and key != "ctrl-c" and tut_key(ui, key, lambda: global_rows(gs, ui)):
+        return ""
+    action = _ap_global_key_inner(ui, key, gs, rows)
+    tut_after_key(ui, key)
+    return action
+
+
+def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
     if key == "ctrl-c":
         return "quit"
     ui.note = ""
     if ui.close_ask is not None:   # the end-session box takes every key but ctrl-c until y or n
-        if not ui.allow_actions:
+        if not ui.actions_on():
             ui.close_ask = None
             return ""
         if key == "y":
@@ -368,6 +380,9 @@ def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
     if key == "i":
         ui.glegend = not ui.glegend
         return ""
+    if key == "w":   # the station view: live worker cards, timeline and reviews of this session
+        _ap_open_station_from_row(ui, gs, tree)
+        return ""
     if key == "p":   # pin the selected station idle or active, or back to automatic; the main loop runs it (it needs the collector)
         return "pin" if global_rows(gs, ui) else ""
     if key == "esc" and (ui.gquery or ui.gfilter != "all"):
@@ -447,15 +462,35 @@ def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
         ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
         ui.pinned.clear()
     elif key in ("o", "space") and kind != "more":
-        ui.gpage, ui.gstage, ui.scroll = "stage", path, 0
-        ui.view, ui.tab, ui.follow = "overview", "live", True
-        ui.pscroll.clear()
-        stage = next((s for s in gs.stages if s.path == path), None)
-        ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
-        ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
-        if stage is not None and kind == "worker":
-            ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == name), 0)
+        _ap_open_station(ui, gs, path, name if kind == "worker" else "")
     return ""
+
+
+def _ap_open_station(ui: UIState, gs: GlobalSnapshot, path: str, worker: str = "") -> None:
+    """The station view of the session at `path`: live worker cards, timeline, reviews; L lead, C cost, F files inside.
+    Esc goes back to the list. `worker` puts the cursor on that worker's card."""
+    ui.gpage, ui.gstage, ui.scroll = "stage", path, 0
+    ui.view, ui.tab, ui.follow = "overview", "live", True
+    ui.pscroll.clear()
+    stage = next((s for s in gs.stages if s.path == path), None)
+    ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+    ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
+    if stage is not None and worker:
+        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == worker), 0)
+
+
+def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[str, str, str]]) -> None:
+    """w on any row: the station view of the row's session. A project heading opens its first session."""
+    if not tree:
+        return
+    i = min(max(ui.gsel, 0), len(tree) - 1)
+    path, kind, name = tree[i]
+    if not path:   # a heading: the first session row below it
+        path, kind, name = next((row for row in tree[i:] if row[0] and row[1] in ("stage", "worker")), ("", "", ""))
+    if path and any(s.path == path for s in gs.stages):
+        _ap_open_station(ui, gs, path, name if kind == "worker" else "")
+    else:
+        ui.note = "w: nothing to open on this row"
 
 
 def _ap_wk_action(ui: UIState, gs: GlobalSnapshot, stage: Stage, wk: Worker, action: str) -> str:
@@ -706,7 +741,7 @@ def _ap_close_selected(ui: UIState, gs: GlobalSnapshot, gc: GlobalCollector) -> 
         if stage.live == 0:   # daemon-hosted session: no process to end, so hide it like a gone one
             gc.dismiss(path)
     elif stage.lead_state != "gone":
-        if ui.allow_actions:
+        if ui.actions_on():
             ui.close_ask = (path, stage.lead_pid or 0)
         else:
             ui.note = "ending a session needs --allow-actions"
@@ -744,7 +779,7 @@ def _ap_control(gc: GlobalCollector, path: str, action: str, now: float | None =
 
 def _ap_end_lead(ui: UIState, gc: GlobalCollector) -> None:
     """y in the confirm box: SIGTERM the lead, but only after a fresh /proc read still finds that pid as the station's lead."""
-    if not ui.allow_actions:
+    if not ui.actions_on():
         ui.close_ask = None
         ui.note = "ending a session needs --allow-actions"
         return
@@ -752,6 +787,9 @@ def _ap_end_lead(ui: UIState, gc: GlobalCollector) -> None:
         return
     path, pid = ui.close_ask
     ui.close_ask = None
+    if ui.demo:   # the tutorial's rows have made-up pids: never signal them
+        ui.note = "demo: the session was not ended. A real y would have ended it."
+        return
     lead = gc.current_lead(path)
     if pid <= 0 or lead is None or lead.pid != pid:
         return
@@ -801,7 +839,10 @@ def _ap_page_key(ui: UIState, key: str, rows: int) -> str:
 
 def _ap_load_page(ui: UIState, stage_dir: str, stage: Stage | None, snap: Snapshot | None, now: float) -> None:
     """Read what the open page shows: once on open and on r, never per frame. The cost page is drawn from the snapshot."""
-    if ui.view == "lead":
+    if ui.demo:   # the tutorial's rows have no lead.json, stream file or git to read
+        name = _ap_sel_name(ui, snap) if ui.view == "files" else ""
+        ui.detail_text = demo_page_lines(ui.view, name)
+    elif ui.view == "lead":
         ui.detail_text = lead_page(stage_dir, stage, now)
     elif ui.view == "files":
         name = _ap_sel_name(ui, snap)
@@ -1475,7 +1516,7 @@ def _ap_collector_loop(collector: Collector | GlobalCollector, shared: _ap_Share
 
 def _ap_load_detail(ui: UIState, collector: Collector, snap: Snapshot | None, error: str) -> None:
     if ui.view != "detail" or snap is None or ui.tab == "live" or not 0 <= ui.sel < len(snap.workers):
-        if ui.tab == "live":
+        if ui.tab == "live" and ui.view not in ("lead", "files"):   # those pages are read once on open; a snapshot must not blank them
             ui.detail_text = []
         return
     try:
@@ -1500,7 +1541,7 @@ def _ap_load_global_detail(ui: UIState, collector: GlobalCollector, path: str, n
 
 def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int, interval: float,
                     notify: bool, all_history: bool, density: str = "full",
-                    global_mode: bool = False, *, ui: UIState) -> int:
+                    global_mode: bool = False, tutorial: bool = False, *, ui: UIState) -> int:
     fd_in, fd_out = sys.stdin.fileno(), sys.stdout.fileno()
     stop = threading.Event()
     wake = threading.Event()
@@ -1529,7 +1570,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
     trace = ""
     suspend_requested = threading.Event()
     continued = threading.Event()
-    ui = UIState(density=density, cc=global_mode)
+    ui.density, ui.cc = density, global_mode   # the caller's UIState carries the opt-ins (allow_actions); do not replace it
     expand_path = _ap_expand_path(collector) if global_mode else ""
     expand_save_at = 0.0
 
@@ -1567,6 +1608,9 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
         if global_mode:
             _ap_load_expand(ui, expand_path)
         ui.glevel, ui.glevel_all = _ap_load_levels()
+        if tutorial:
+            ui.demo = True
+            tut_start(ui, lambda: [])
         saved_levels = (dict(ui.glevel), ui.glevel_all)
         prev_lines: list[str] | None = None
         prev_snap: Snapshot | None = None
@@ -1680,8 +1724,9 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
             elif global_mode and gs is not None:
                 stage_snap = _ap_global_stage_snap(gs, ui) if ui.gpage in ("worker", "stage") else None
                 if ui.view == "quota":
-                    quota_snap = Snapshot(quota=gs.quota, quota_ok=gs.quota_ok, openrouter=gs.openrouter,
-                                          openrouter_ok=gs.openrouter_ok, usage_history=gs.usage_history)
+                    quota_snap = Snapshot(quota=gs.quota, quota_ok=gs.quota_ok, spend=gs.spend, spend_ok=gs.spend_ok,
+                                          openrouter=gs.openrouter, openrouter_ok=gs.openrouter_ok,
+                                          usage_history=gs.usage_history)
                     lines = render_frame(quota_snap, ui, cols, rows, now)
                 elif stage_snap is not None and ui.gpage in ("worker", "stage"):
                     if ui.gpage == "worker" and ui.view == "detail":
@@ -1830,6 +1875,7 @@ def _ap_fps(text: str) -> int:
 def _ap_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="station", description="Dashboard for orchestrator worker agents.")
     p.add_argument("--demo", action="store_true", help="show generated demo data")
+    p.add_argument("--tutorial", action="store_true", help="interactive tutorial on demo data")
     p.add_argument("--serve", action="store_true", help="serve the read-only web monitor")
     p.add_argument("--port", type=int, default=8743, help="web monitor port")
     p.add_argument("--host", default="127.0.0.1", help="web monitor bind address")
@@ -1991,6 +2037,26 @@ def _ap_json(args: argparse.Namespace, script_dir: str) -> int:
     return 0
 
 
+def _ap_tutorial(args: argparse.Namespace) -> int:
+    """`--tutorial`: the control center on fake sessions. Every file the app would write (expand choices, levels,
+    density) goes to a scratch directory that is removed afterwards, so the tutorial leaves nothing behind."""
+    if not (sys.stdout.isatty() and sys.stdin.isatty()) or os.environ.get("TERM", "") == "dumb":
+        sys.stderr.write("station --tutorial needs an interactive terminal\n")
+        return 2
+    scratch = tempfile.mkdtemp(prefix="status-tutorial-")
+    cx_set_demo(True)
+    for name in ("XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"):
+        os.environ[name] = scratch
+    os.environ["HOME"] = scratch   # anything that still expands ~ lands in the scratch directory too
+    try:
+        collector = DemoGlobalCollector(os.path.join(scratch, "overrides.json"))
+        return _ap_interactive(collector, "tutorial", args.fps, 0.5, False, False, global_mode=True, tutorial=True,  # type: ignore[arg-type]
+                               ui=_ap_launch_ui("full"))
+    finally:
+        cx_set_demo(False)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _ap_parser().parse_args(argv)
@@ -1999,6 +2065,8 @@ def main(argv: list[str] | None = None) -> int:
     script_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
     if args.title_test:
         return _ap_title_test()
+    if args.tutorial:
+        return _ap_tutorial(args)
     global_mode = _ap_global_mode(args, script_dir)
     if args.json or args.execution:
         return _ap_json(args, script_dir)

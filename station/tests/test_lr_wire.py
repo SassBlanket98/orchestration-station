@@ -132,7 +132,7 @@ class GroupHeadingCount(unittest.TestCase):
 
 
 class ContextColumn(unittest.TestCase):
-    def test_ctx_percentage_intact_on_each_session_at_100_columns(self) -> None:
+    def test_ctx_tokens_intact_on_each_session_at_100_columns(self) -> None:
         stages = []
         for i, label in enumerate(["alpha", "a-much-longer-project-name", "b"]):
             s = station(f"/c{i}", label, [Worker("w", RUNNING, start=NOW - 60)], last=NOW - 5,
@@ -140,11 +140,11 @@ class ContextColumn(unittest.TestCase):
             s.state, s.lead_state, s.lead_ctx, s.lead_ctx_window = "active", "live", 46_000, 100_000
             stages.append(s)
         gs = GlobalSnapshot(now=NOW, stages=stages)
-        lines = [ln for ln in plain(render_global(gs, UIState(), 100, 40, NOW)) if "46%" in ln]
+        lines = [ln for ln in plain(render_global(gs, UIState(), 100, 40, NOW)) if "46k" in ln]
         self.assertEqual(len(lines), 3)
-        starts = [_wd_width(ln[:ln.index("46%")]) for ln in lines]
+        starts = [_wd_width(ln[:ln.index("46k")]) for ln in lines]
         self.assertTrue(all(start > 0 for start in starts))
-        self.assertTrue(all(len({_wd_width(ln[:ln.index("46%")])}) == 1 for ln in lines))
+        self.assertTrue(all(len({_wd_width(ln[:ln.index("46k")])}) == 1 for ln in lines))
 
 
 if __name__ == "__main__":

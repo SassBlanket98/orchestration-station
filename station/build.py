@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-ORDER = ["model", "labels", "registry", "native", "logparse", "gitstate", "openclaw", "codexread", "events", "collect", "demo", "widgets", "titleart", "usageview", "opsspark", "opstree", "opsgrid", "ccactions", "ccpane", "ccstrip", "ccrow", "cchint", "cclayout", "ccspawn", "cckeys", "openclawview", "workerview", "sessionview", "render", "webdata", "web", "app"]
+ORDER = ["model", "labels", "registry", "native", "logparse", "gitstate", "openclaw", "codexread", "events", "collect", "demo", "widgets", "titleart", "usageview", "opsspark", "opstree", "opsgrid", "ccactions", "ccpane", "ccstrip", "ccrow", "cchint", "cclayout", "ccspawn", "cckeys", "tutorial", "openclawview", "workerview", "sessionview", "render", "webdata", "web", "app"]
 SIBLING = re.compile(rf"^from ({'|'.join(ORDER)}) import ")
 STDLIB = re.compile(r"^(import |from \S+ import )")
 

@@ -351,19 +351,21 @@ class QuotaAccount:
 
 
 OPENROUTER_ACCOUNT = "openrouter"
+OPENAI_ACCOUNT = "openai"
 OPENROUTER_BALANCE_STALE_S = 30 * 60   # balanceAt older than this -> stale chip
 OPENROUTER_MAX_ROWS = 400          # a runaway quota reply cannot swell every refresh and API response
+SPEND_PROVIDER_ORDER = (OPENROUTER_ACCOUNT, OPENAI_ACCOUNT)
 
 
 @dataclass
-class OpenRouterSpendDay:
+class SpendDay:
     date: str       # UTC YYYY-MM-DD
     usd: float
     requests: int
 
 
 @dataclass
-class OpenRouterSpendModel:
+class SpendModel:
     model: str
     usd: float
     requests: int
@@ -372,17 +374,27 @@ class OpenRouterSpendModel:
 
 
 @dataclass
-class OpenRouterSnapshot:
-    balance: float | None
-    floor_usd: float | None
-    burn_per_day: float | None
-    runs_out_at: float | None   # epoch seconds
-    balance_at: float | None    # epoch seconds of the last balance reading
-    low: bool
-    stale: bool
-    since: str                  # spend window start (UTC day)
-    per_day: list[OpenRouterSpendDay]
-    per_model: list[OpenRouterSpendModel]
+class SpendSnapshot:
+    provider: str = OPENROUTER_ACCOUNT
+    balance: float | None = None
+    floor_usd: float | None = None
+    burn_per_day: float | None = None
+    runs_out_at: float | None = None   # epoch seconds
+    balance_at: float | None = None    # epoch seconds of the last balance reading
+    low: bool = False
+    stale: bool = False
+    since: str = ""                  # spend window start (UTC day)
+    per_day: list[SpendDay] = field(default_factory=list)
+    per_model: list[SpendModel] = field(default_factory=list)
+    month_to_date_usd: float | None = None
+    budget_limit_usd: float | None = None
+    budget_used_pct: float | None = None
+    source: str | None = None
+
+
+OpenRouterSpendDay = SpendDay
+OpenRouterSpendModel = SpendModel
+OpenRouterSnapshot = SpendSnapshot
 
 
 @dataclass
@@ -397,13 +409,29 @@ class Snapshot:
     milestones: list[Milestone] = field(default_factory=list)  # oldest first
     quota: list[QuotaAccount] = field(default_factory=list)
     quota_ok: bool = False               # False -> hide the quota panel
-    openrouter: OpenRouterSnapshot | None = None      # the usage screen (global view only)
+    spend: dict[str, SpendSnapshot] = field(default_factory=dict)
+    spend_ok: dict[str, bool] = field(default_factory=dict)
+    openrouter: SpendSnapshot | None = None      # the usage screen (global view only); mirrors spend["openrouter"]
     openrouter_ok: bool = False
     usage_history: dict[str, list[float]] = field(default_factory=dict)   # account -> 24h of % used, oldest first
     tokens_total: int | None = None
     cost_total: float | None = None
     services: list[tuple[str, bool]] = field(default_factory=list)  # non-agent pid files: (name, up)
     groups: list[Group] = field(default_factory=list)     # newest first; the current group is flagged
+
+    def __post_init__(self) -> None:
+        _sync_spend_fields(self)
+
+
+def _sync_spend_fields(snap: Snapshot | GlobalSnapshot) -> None:
+    if snap.openrouter is not None:
+        snap.spend.setdefault(OPENROUTER_ACCOUNT, snap.openrouter)
+    elif OPENROUTER_ACCOUNT in snap.spend:
+        snap.openrouter = snap.spend[OPENROUTER_ACCOUNT]
+    if snap.openrouter_ok:
+        snap.spend_ok[OPENROUTER_ACCOUNT] = True
+    elif snap.spend_ok.get(OPENROUTER_ACCOUNT):
+        snap.openrouter_ok = True
 
 
 SCAN_DEPTH = 4           # global view: directory levels searched under each root for a stage dir
@@ -565,11 +593,16 @@ class GlobalSnapshot:
     errors: list[str] = field(default_factory=list)  # collector or parse failures, shown instead of an empty tree
     quota: list[QuotaAccount] = field(default_factory=list)
     quota_ok: bool = False
-    openrouter: OpenRouterSnapshot | None = None
+    spend: dict[str, SpendSnapshot] = field(default_factory=dict)
+    spend_ok: dict[str, bool] = field(default_factory=dict)
+    openrouter: SpendSnapshot | None = None
     openrouter_ok: bool = False          # False -> treat openrouter block as absent
     usage_history: dict[str, list[float]] = field(default_factory=dict)   # account -> 24h of % used, oldest first
     tokens_total: int | None = None      # summed over the stages shown
     cost_total: float | None = None
+
+    def __post_init__(self) -> None:
+        _sync_spend_fields(self)
 
 
 @dataclass
@@ -617,6 +650,16 @@ class UIState:
     group_open: set[str] = field(default_factory=set)  # Group.key of earlier groups unfolded in the station view
     pinned: set[str] = field(default_factory=set)     # finished workers the user opened; kept open if they run again
     help: bool = False                   # ? overlay open
+    tut: int = -1                        # tutorial step index (tutorial.STEPS); -1 = not running
+    tut_base: tuple = ()                 # UI state taken when the tutorial step began (see tutorial._tu_snapshot)
+    tut_seen: set[str] = field(default_factory=set)   # what the current tutorial step has seen you do (tabs visited, keys pressed)
+    tut_ok: bool = False                 # the current tutorial step's goal is met; only then does next work
+    demo: bool = False                   # demo data (tutorial): ccactions is in demo mode, so actions report and do nothing
+
+    def actions_on(self) -> bool:
+        """Process actions are allowed with --allow-actions, or in the tutorial where they only report."""
+        return self.allow_actions or self.demo
+
     # global view: close actions
     close_ask: tuple[str, int] | None = None   # (station path, lead pid) waiting on the y/n confirm box
     closing: set[str] = field(default_factory=set)  # stations whose lead got SIGTERM; dismissed once it is gone
@@ -4215,6 +4258,10 @@ def _cev_lead_events(stage: Stage) -> list[CCEvent]:
 
 
 
+_CO_SPEND_PROVIDERS: dict[str, tuple[str, tuple[str, ...]]] = {   # provider id -> (override env var, default quota args)
+    "openrouter": ("STATUS_OPENROUTER_CMD", ("openrouter", "--json")),
+    "openai": ("STATUS_OPENAI_CMD", ("openai", "--json")),
+}
 _co_quota_timeout = 20
 _co_quota_interval = 60
 _co_usage_sample_s = 300          # one usage sample per account every 5 minutes
@@ -7038,7 +7085,7 @@ def _co_totals(workers: list[Worker]) -> tuple[int | None, float | None]:
 _co_models_file = home_path("picker/models.json")
 # Picker subscription ids that bill per token: an API key (Anthropic, Cursor), Zen credits, OpenRouter.
 # opencode-go is a flat subscription, cursor-models and opencode-free are included, local is the GPU.
-_co_metered_routes = frozenset({"anthropic-api", "openrouter", "opencode-api", "cursor-api"})
+_co_metered_routes = frozenset({"anthropic-api", "openrouter", "openai-api", "opencode-api", "cursor-api"})
 _co_route_cache: dict[str, tuple[object, dict[str, str], float]] = {}
 _co_route_ttl_s = 60.0
 
@@ -7157,7 +7204,7 @@ class Collector:
 
     def __init__(self, stage_dir: str, *, quota: bool = True, openrouter_only: bool = False) -> None:
         # quota=False: no quota thread; the owner (GlobalCollector) reads quota once for all stages
-        # openrouter_only: with quota=False, a thread that polls just the OpenRouter command (the phone monitor's feed)
+        # openrouter_only: with quota=False, poll spend-provider commands only (the phone monitor's feed)
         self._co_stage = stage_dir
         self._co_logs: dict[str, LogState] = {}
         self._co_log_fp: dict[str, tuple[int, float, int, bytes]] = {}
@@ -7170,15 +7217,16 @@ class Collector:
         self._co_usage_path = os.path.expanduser(os.environ.get("STATUS_USAGE_HISTORY") or _co_default_usage_history)
         self._co_usage: list[tuple[float, dict[str, float]]] = []   # (time, account -> % used of its shortest window)
         self._co_usage_loaded = False
-        self._co_openrouter: OpenRouterSnapshot | None = None
-        self._co_openrouter_ever_ok = False
-        self._co_openrouter_last_ok = False
+        self._co_spend: dict[str, SpendSnapshot] = {}
+        self._co_spend_ever_ok: dict[str, bool] = {pid: False for pid in _CO_SPEND_PROVIDERS}
+        self._co_spend_last_ok: dict[str, bool] = {pid: False for pid in _CO_SPEND_PROVIDERS}
         self._co_clk = _co_clk_tck()
         self._co_page = _co_page_size()
         self._co_ghosts: dict[tuple[str, int], tuple[Worker, float | None]] = {}   # recently seen headless workers
         self._co_boot = _co_boot_time()
         self._co_quota_cmd = _co_command("STATUS_QUOTA_CMD", ("status", "--json"))
-        self._co_openrouter_cmd = _co_command("STATUS_OPENROUTER_CMD", ("openrouter", "--json"))
+        self._co_spend_cmds: dict[str, list[str]] = {
+            pid: _co_command(env_key, args) for pid, (env_key, args) in _CO_SPEND_PROVIDERS.items()}
         self._co_stop = threading.Event()
         self._co_quick = False   # first paint: GlobalCollector sets it to skip cold parses of finished workers' logs
         self._co_thread: threading.Thread | None = None
@@ -7265,60 +7313,147 @@ class Collector:
             return None
         return accounts
 
-    def _co_parse_openrouter(self, data: dict, now: float) -> OpenRouterSnapshot | None:
+    def _co_parse_spend(self, provider: str, data: dict, now: float) -> SpendSnapshot | None:
         try:
-            floor = data.get("floorUsd")
-            floor_usd = None if floor is None else float(floor)
+            floor_raw = data.get("floorUsd")
+            floor_usd = None
+            if floor_raw is not None:
+                try:
+                    floor_usd = float(floor_raw)
+                except (TypeError, ValueError, OverflowError):
+                    floor_usd = None
             cred = data.get("credit") or {}
-            balance = cred.get("balanceUsd")
+            bal = cred.get("balanceUsd")
+            balance_f: float | None = None
+            if bal is not None:
+                try:
+                    balance_f = float(bal)
+                except (TypeError, ValueError, OverflowError):
+                    balance_f = None
+            bal_block = data.get("balance") or {}
+            if balance_f is None and isinstance(bal_block, dict):
+                usd = bal_block.get("usd")
+                if usd is not None:
+                    try:
+                        balance_f = float(usd)
+                    except (TypeError, ValueError, OverflowError):
+                        balance_f = None
             balance_at_ms = cred.get("balanceAt")
+            if balance_at_ms is None and isinstance(bal_block, dict):
+                balance_at_ms = bal_block.get("at")
+            balance_at: float | None = None
+            if balance_at_ms is not None:
+                try:
+                    balance_at = float(balance_at_ms) / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    balance_at = None
             burn = cred.get("burnPerDayUsd")
+            burn_f: float | None = None
+            if burn is not None:
+                try:
+                    burn_f = float(burn)
+                except (TypeError, ValueError, OverflowError):
+                    burn_f = None
             out = cred.get("runsOutAt")
-            balance_at = None if balance_at_ms is None else float(balance_at_ms) / 1000.0
-            stale = balance_at is not None and now - balance_at > OPENROUTER_BALANCE_STALE_S
+            runs_out: float | None = None
+            if out is not None:
+                try:
+                    runs_out = float(out) / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    runs_out = None
+            stale_flag = data.get("stale")
+            stale = bool(stale_flag) if stale_flag is not None else False
+            if provider == OPENROUTER_ACCOUNT and balance_at is not None:
+                stale = stale or (now - balance_at > OPENROUTER_BALANCE_STALE_S)
             low = bool(cred.get("low", False))
-            balance_f = None if balance is None else float(balance)
             if balance_f is not None and floor_usd is not None and balance_f < floor_usd:
                 low = True
             spend = data.get("spend") or {}
-            since = str(spend.get("since", ""))
-            per_day: list[OpenRouterSpendDay] = []
+            since = str(spend.get("since", "")) if spend.get("since") is not None else ""
+            mtd: float | None = None
+            mtd_raw = spend.get("monthToDateUsd")
+            if mtd_raw is not None:
+                try:
+                    mtd = float(mtd_raw)
+                except (TypeError, ValueError, OverflowError):
+                    mtd = None
+            per_day: list[SpendDay] = []
             for row in (spend.get("perDay") or [])[:OPENROUTER_MAX_ROWS]:
-                per_day.append(OpenRouterSpendDay(
-                    date=str(row.get("date", "")),
-                    usd=float(row.get("usd", 0)),
-                    requests=int(row.get("requests", 0)),
-                ))
-            per_model: list[OpenRouterSpendModel] = []
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    per_day.append(SpendDay(
+                        date=str(row.get("date", "")),
+                        usd=float(row.get("usd", 0)),
+                        requests=int(row.get("requests", 0)),
+                    ))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            per_model: list[SpendModel] = []
             for row in (spend.get("perModel") or [])[:OPENROUTER_MAX_ROWS]:
-                per_model.append(OpenRouterSpendModel(
-                    model=str(row.get("model", "")),
-                    usd=float(row.get("usd", 0)),
-                    requests=int(row.get("requests", 0)),
-                    prompt_tokens=int(row.get("promptTokens", 0)),
-                    completion_tokens=int(row.get("completionTokens", 0)),
-                ))
-            return OpenRouterSnapshot(
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    per_model.append(SpendModel(
+                        model=str(row.get("model", "")),
+                        usd=float(row.get("usd", 0)),
+                        requests=int(row.get("requests", 0)),
+                        prompt_tokens=int(row.get("promptTokens", 0)),
+                        completion_tokens=int(row.get("completionTokens", 0)),
+                    ))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            budget = data.get("budget") or {}
+            budget_limit: float | None = None
+            budget_pct: float | None = None
+            if isinstance(budget, dict):
+                lim = budget.get("limitUsd")
+                if lim is not None:
+                    try:
+                        budget_limit = float(lim)
+                    except (TypeError, ValueError, OverflowError):
+                        budget_limit = None
+                used = budget.get("usedPct")
+                if used is not None:
+                    try:
+                        budget_pct = float(used)
+                    except (TypeError, ValueError, OverflowError):
+                        budget_pct = None
+            src = data.get("source")
+            source = str(src) if src is not None else None
+            label = str(data.get("account", provider) or provider)
+            if not (balance_f is not None or mtd is not None or per_day or per_model or since):
+                return None
+            return SpendSnapshot(
+                provider=label,
                 balance=balance_f,
                 floor_usd=floor_usd,
-                burn_per_day=None if burn is None else float(burn),
-                runs_out_at=None if out is None else float(out) / 1000.0,
+                burn_per_day=burn_f,
+                runs_out_at=runs_out,
                 balance_at=balance_at,
                 low=low,
                 stale=stale,
                 since=since,
                 per_day=per_day,
                 per_model=per_model,
+                month_to_date_usd=mtd,
+                budget_limit_usd=budget_limit,
+                budget_used_pct=budget_pct,
+                source=source,
             )
-        except (TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, OverflowError, AttributeError):
             return None
 
-    def _co_run_openrouter(self) -> OpenRouterSnapshot | None:
-        if not self._co_openrouter_cmd:
+    def _co_parse_openrouter(self, data: dict, now: float) -> SpendSnapshot | None:
+        return self._co_parse_spend(OPENROUTER_ACCOUNT, data, now)
+
+    def _co_run_spend(self, provider: str) -> SpendSnapshot | None:
+        cmd = self._co_spend_cmds.get(provider) or []
+        if not cmd:
             return None
         try:
             result = subprocess.run(
-                self._co_openrouter_cmd,
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -7336,12 +7471,15 @@ class Collector:
             return None
         if not isinstance(data, dict):
             return None
-        return self._co_parse_openrouter(data, time.time())
+        return self._co_parse_spend(provider, data, time.time())
+
+    def _co_run_openrouter(self) -> SpendSnapshot | None:
+        return self._co_run_spend(OPENROUTER_ACCOUNT)
 
     def _co_quota_loop(self) -> None:
         while not self._co_stop.is_set():
             accounts = self._co_run_quota() if self._co_quota_on else None
-            openrouter = self._co_run_openrouter()
+            spend_results = {pid: self._co_run_spend(pid) for pid in _CO_SPEND_PROVIDERS}
             with self._co_lock:
                 if self._co_quota_on:
                     self._co_quota_last_ok = accounts is not None
@@ -7351,10 +7489,11 @@ class Collector:
             if accounts is not None:
                 self._co_usage_sample(accounts, time.time())
             with self._co_lock:
-                self._co_openrouter_last_ok = openrouter is not None
-                if openrouter is not None:
-                    self._co_openrouter_ever_ok = True
-                    self._co_openrouter = openrouter
+                for pid, snap in spend_results.items():
+                    self._co_spend_last_ok[pid] = snap is not None
+                    if snap is not None:
+                        self._co_spend_ever_ok[pid] = True
+                        self._co_spend[pid] = snap
             if self._co_stop.wait(_co_quota_interval):
                 return
 
@@ -7417,13 +7556,26 @@ class Collector:
         with self._co_lock:
             return self._co_quota_ever_ok and self._co_quota_last_ok
 
-    def _co_openrouter_ok(self) -> bool:
+    def _co_spend_ok(self, provider: str) -> bool:
         with self._co_lock:
-            return self._co_openrouter_ever_ok and self._co_openrouter_last_ok
+            return self._co_spend_ever_ok.get(provider, False) and self._co_spend_last_ok.get(provider, False)
 
-    def _co_openrouter_snapshot(self) -> OpenRouterSnapshot | None:
+    def _co_spend_snapshot(self, provider: str) -> SpendSnapshot | None:
         with self._co_lock:
-            return self._co_openrouter
+            return self._co_spend.get(provider)
+
+    def _co_spend_state(self) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
+        with self._co_lock:
+            return dict(self._co_spend), {
+                pid: self._co_spend_ever_ok.get(pid, False) and self._co_spend_last_ok.get(pid, False)
+                for pid in _CO_SPEND_PROVIDERS
+            }
+
+    def _co_openrouter_ok(self) -> bool:
+        return self._co_spend_ok(OPENROUTER_ACCOUNT)
+
+    def _co_openrouter_snapshot(self) -> SpendSnapshot | None:
+        return self._co_spend_snapshot(OPENROUTER_ACCOUNT)
 
     def _co_quota_snapshot(self, workers: list[Worker]) -> list[QuotaAccount]:
         with self._co_lock:
@@ -9520,7 +9672,8 @@ class GlobalCollector:
 
     def dismiss(self, stage_path: str, now: float | None = None) -> bool:
         """Hide a station until its status files or its lead change. False when the file cannot be written."""
-        stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
+        if not stage_path.startswith("execution:"):   # an execution row is filtered by its own path; its dir would hide nothing
+            stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
         known_station = any(s.path == stage_path and s.dir for s in self._co_last_stages)
         openclaw_station = any(s.path == stage_path and s.lead_kind == "openclaw" for s in self._co_last_stages)
         if not known_station and not openclaw_station and not stage_path.startswith("execution:"):
@@ -9786,6 +9939,7 @@ class GlobalCollector:
         _co_metrics_leads(stages, now)
         _co_cc_fill_harness(stages)
         workers = [worker for stage in stages for worker in stage.snap.workers]
+        spend, spend_ok = self._co_quota._co_spend_state()
         return GlobalSnapshot(
             now=now,
             all_history=all_history,
@@ -9795,6 +9949,8 @@ class GlobalCollector:
             unattached=sum(len(stage.snap.workers) for stage in stages if stage.unattached),
             quota=self._co_quota._co_quota_snapshot(workers),
             quota_ok=self._co_quota._co_quota_ok(),
+            spend=spend,
+            spend_ok=spend_ok,
             openrouter=self._co_quota._co_openrouter_snapshot(),
             openrouter_ok=self._co_quota._co_openrouter_ok(),
             usage_history=self._co_quota._co_usage_series(now),
@@ -10687,6 +10843,96 @@ class DemoCollector:
         pass
 
 
+# --- global demo (the tutorial): three session rows, all fake ---------------------------------------------------
+# The pids are made up and the rows only work with ccactions.cx_set_demo(True), which the tutorial sets: then stop, kill,
+# resume and spawn show their real prompts and report what they would have done. Overrides go to a scratch file the caller
+# names, never to $STATION_HOME.
+_dm_GLOBAL_ROWS = (
+    # (session id, label, session name, tag, harness, model, kind, state, started offset, phase, stream, lead pid, resume command)
+    ("demo-lead", _dm_TITLE, "ship the api", "CC·P", "claude", "sonnet-5.5", "claude", "active", -1500.0, "build", "api-routes", 48100, ""),
+    (None, _dm_SOLO_LABEL, "side tools", "CC·P", "claude", "haiku-5.5", "claude", "active", _dm_SOLO_SINCE, "build", "side-tools", 48902, ""),
+    ("demo-docs", "docs-site", "docs pass", "CDX", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
+    ("demo-old", "old-spike", "old spike", "CC·P", "claude", "opus-5.5", "claude", "closed", -20000.0, "build", "spike", None, "claude --resume demo-old"),
+)
+
+
+class DemoGlobalCollector:
+    """GlobalCollector stand-in with fixed fake sessions. The demo project's workers come from DemoCollector."""
+
+    def __init__(self, overrides_path: str) -> None:
+        self._demo = DemoCollector("")
+        self._co_overrides_path = overrides_path
+        self._pins: dict[str, str] = {}
+
+    def snapshot(self, now: float | None = None, all_history: bool = False, quick: bool = False) -> GlobalSnapshot:
+        t = time.time() if now is None else now
+        t0 = self._demo._t0
+        stages: list[Stage] = []
+        for sid, label, name, tag, harness, model, kind, state, since, phase, stream, lead_pid, resume in _dm_GLOBAL_ROWS:
+            path = f"/demo/{label}/.stage" + (f"#{sid}" if sid else "")
+            snap = self._demo.snapshot(now=t, all_history=all_history) if sid == "demo-lead" else Snapshot(title=label, now=t)
+            live = sum(w.state in LIVE_STATES for w in snap.workers)
+            state = self._pins.get(path, state)
+            gone = state == "closed"
+            quiet = state != "active"
+            stages.append(Stage(
+                path=path, label=label, snap=snap, live=live, last_activity=t - (5400.0 if quiet else 30.0) - (1100.0 if gone else 0.0),
+                lead=LeadInfo(model=model, phase=phase, stream=stream),
+                lead_state="gone" if gone else "live", lead_pid=None if gone else lead_pid, lead_since=0.0 if gone else t0 + since,
+                lead_kind="" if gone else kind, solo=not snap.workers and not gone, resume_cmd=resume,
+                dir=path, session_id=sid or "demo-solo", session_name=name, tag=tag, state=state,
+                activity=t - (5400.0 if quiet else 30.0) - (1100.0 if gone else 0.0), cwd=f"/demo/{label}",
+                lead_model=model, harness=harness,
+            ))
+        return GlobalSnapshot(now=t, all_history=all_history, stages=stages, quota=_dm_quota(t - t0), quota_ok=True)
+
+    def collector_for(self, stage_path: str) -> DemoCollector | None:
+        return self._demo if "demo-project" in stage_path else None
+
+    def detail(self, stage_path: str, name: str, tab: str) -> list[str]:
+        return self._demo.detail(name, tab) if "demo-project" in stage_path else []
+
+    def toggle_idle(self, path: str) -> str:
+        current = self._pins.get(path)
+        nxt = {None: "idle", "idle": "active", "active": None}[current]
+        if nxt is None:
+            self._pins.pop(path, None)
+        else:
+            self._pins[path] = nxt
+        return nxt or ""
+
+    def dismiss(self, stage_path: str, now: float | None = None) -> bool:
+        return False
+
+    def current_lead(self, path: str) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
+def demo_page_lines(view: str, worker: str = "") -> list[str]:
+    """What the station view's lead and files pages show in the tutorial: fixed text in the shape the real pages have
+    (the real ones read lead.json, the stream file and git, none of which exist for the demo rows)."""
+    if view == "lead":
+        return ["kind   claude", "state  live", "pid    48100", "age    25m", "",
+                "lead.json", "  {", '    "model": "sonnet-5.5",', '    "phase": "build",', '    "stream": "api-routes"', "  }", "",
+                "stream  api-routes.md",
+                "  Goal: put every src/api route behind the shared auth middleware and keep the tests green.",
+                "  Workers: api-routes (routes), db-schema (migration), ui-cards (usage cards).",
+                "", "quota picks (PROGRESS.md)",
+                "  22:40 pick api-routes -> sonnet-work (medium), 62% headroom",
+                "  22:42 pick db-schema -> deepseek (high), 91% headroom"]
+    if view == "files":
+        who = worker or "the selected worker"
+        return [f"files changed by {who} (example data)", "",
+                " M src/api/routes.ts                  | 14 ++++++++-----",
+                " M src/api/middleware/auth.ts         |  9 +++++--",
+                " A src/db/migrations/0042_plan_id.sql | 18 ++++++++++",
+                " 3 files changed, 28 insertions(+), 13 deletions(-)"]
+    return []
+
+
 
 # ──────────────────── widgets ────────────────────
 """Reusable pieces for the dashboard renderer: palette, colours, measuring, boxes, bars, formatting."""
@@ -10743,6 +10989,7 @@ def _wd_lerp_rgb(a: _wd_Rgb, b: _wd_Rgb, x: float) -> _wd_Rgb:
 
 _wd_SPARK_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_lerp_rgb(_wd_C_FAINT, _wd_C_BLUE, 0.55)), (0.5, _wd_C_BLUE), (1.0, _wd_C_CYAN)]
 _wd_QUOTA_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_GREEN), (70.0, _wd_C_AMBER), (95.0, _wd_C_RED)]
+_wd_CTX_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_SUB), (50.0, _wd_C_SUB), (75.0, _wd_C_AMBER), (92.0, _wd_C_RED)]
 
 _wd_RESET = "\x1b[0m"
 _wd_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -10775,6 +11022,11 @@ def _wd_gradient(stops: Sequence[tuple[float, _wd_Rgb]], x: float) -> _wd_Rgb:
 
 def _wd_pct_color(pct: float) -> _wd_Rgb:
     return _wd_gradient(_wd_QUOTA_STOPS, pct)
+
+
+def _wd_ctx_color(pct: float | None) -> _wd_Rgb:
+    """Context fill: the normal text colour to half the window, easing through amber to red near the limit."""
+    return _wd_C_SUB if pct is None else _wd_gradient(_wd_CTX_STOPS, pct)
 
 
 def _wd_family_color(family: str) -> _wd_Rgb:
@@ -11909,7 +12161,7 @@ def _uv_rank(name: str) -> int:
     return 5
 
 
-def _uv_groups(accounts: list[QuotaAccount], or_shown: bool) -> tuple[list[QuotaAccount], list[QuotaAccount], list[str]]:
+def _uv_groups(accounts: list[QuotaAccount], spend_shown: set[str]) -> tuple[list[QuotaAccount], list[QuotaAccount], list[str]]:
     """(accounts with windows, credit accounts, names with nothing to show). Same-name duplicates collapse."""
     credit_names = {a.name for a in accounts if a.credit is not None}
     live: list[QuotaAccount] = []
@@ -11918,8 +12170,8 @@ def _uv_groups(accounts: list[QuotaAccount], or_shown: bool) -> tuple[list[Quota
     seen: set[str] = set()
     for a in accounts:
         if a.credit is not None:
-            if a.name == OPENROUTER_ACCOUNT and or_shown:
-                continue    # the OpenRouter block below carries it
+            if a.name in spend_shown:
+                continue    # a spend block below carries it
             credit.append(a)
             continue
         if a.windows and not a.stale:
@@ -11945,10 +12197,13 @@ def _uv_credit_text(a: QuotaAccount) -> tuple[str, bool]:
     return txt, c.low
 
 
-def _uv_openrouter(snap: OpenRouterSnapshot, iw: int) -> list[str]:
+def _uv_spend(snap: SpendSnapshot, iw: int) -> list[str]:
     head = ""
     if snap.balance is None:
-        head += _uv_c("no balance recorded", _wd_C_MUTED)
+        if snap.month_to_date_usd is not None:
+            head += _uv_c(f"${snap.month_to_date_usd:.2f} mtd", _wd_C_TEXT, bold=True)
+        else:
+            head += _uv_c("no balance recorded", _wd_C_MUTED)
     else:
         head += _uv_c(f"${snap.balance:.2f}", _wd_C_RED if snap.low else _wd_C_TEXT, bold=True)
         if snap.low and _uv_plain():
@@ -12041,17 +12296,30 @@ def _uv_two_up(blocks: list[list[str]], cw: int) -> list[str]:
     return out
 
 
-def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRouterSnapshot | None,
+def _uv_merge_spend(openrouter: SpendSnapshot | None, openrouter_ok: bool,
+                    spend: dict[str, SpendSnapshot] | None, spend_ok: dict[str, bool] | None) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
+    merged: dict[str, SpendSnapshot] = dict(spend or {})
+    ok: dict[str, bool] = dict(spend_ok or {})
+    if openrouter is not None:
+        merged.setdefault(OPENROUTER_ACCOUNT, openrouter)
+    if openrouter_ok:
+        ok[OPENROUTER_ACCOUNT] = True
+    return merged, ok
+
+
+def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnapshot | None,
                 openrouter_ok: bool, sel: int, iw: int, now: float,
                 history: dict[str, list[float]] | None = None, spark: bool = True, two_up: bool = False,
-                airy: bool = True) -> tuple[list[str], int, int]:
+                airy: bool = True, spend: dict[str, SpendSnapshot] | None = None,
+                spend_ok: dict[str, bool] | None = None) -> tuple[list[str], int, int]:
     """(body lines, 0, number of subscriptions). Every subscription is a block with all its windows; the
     concerns are separate labelled sections: subscriptions, API credits, OpenRouter, no live data."""
     if not quota_ok:
         return [_uv_c("quota unavailable (quota service not reachable)", _wd_C_DIM)], 0, 0
     history = history or {}
-    or_shown = openrouter_ok and openrouter is not None
-    live, credit, quiet = _uv_groups(quota, or_shown)
+    spend_map, spend_ok_map = _uv_merge_spend(openrouter, openrouter_ok, spend, spend_ok)
+    spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if spend_ok_map.get(pid) and spend_map.get(pid)}
+    live, credit, quiet = _uv_groups(quota, spend_shown)
     nw = max((_wd_width(_wd_clean(a.name)) for a in credit), default=6)
     cw = (iw - 3) // 2 if two_up else iw
     bw = min(max(cw - (4 + 12 + 1 + 4 + 3 + 15 + 18), 10), 44)
@@ -12072,8 +12340,12 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRoute
             lines.append("  " + _uv_c(_wd_pad(_wd_trunc(_wd_clean(a.name), nw), nw), _wd_C_TEXT, bold=True) + "   "
                          + (_uv_c(txt + " LOW", _wd_C_RED, bold=True) if low else _uv_c(txt, _wd_C_MUTED)))
         lines.append("")
-    if or_shown and openrouter is not None:
-        lines += [_uv_rule("OPENROUTER", "", iw)] + gap + ["  " + x for x in _uv_openrouter(openrouter, iw - 2)] + [""]
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = spend_map.get(pid)
+        if not spend_ok_map.get(pid) or snap is None:
+            continue
+        title = pid.upper() if pid != OPENAI_ACCOUNT else "OPENAI"
+        lines += [_uv_rule(title, "", iw)] + gap + ["  " + x for x in _uv_spend(snap, iw - 2)] + [""]
     if quiet:
         lines += [_uv_rule("NO LIVE DATA", "", iw)] + gap + ["  " + _uv_c(_wd_trunc("  ·  ".join(quiet), iw - 2), _wd_C_DIM)]
     while lines and not lines[-1]:
@@ -12081,9 +12353,11 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRoute
     return lines, 0, len(live)
 
 
-def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRouterSnapshot | None,
+def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnapshot | None,
                  openrouter_ok: bool, scroll: int, cols: int, rows: int, now: float,
-                 history: dict[str, list[float]] | None = None) -> list[str]:
+                 history: dict[str, list[float]] | None = None,
+                 spend: dict[str, SpendSnapshot] | None = None,
+                 spend_ok: dict[str, bool] | None = None) -> list[str]:
     """The boxed screen, `rows` tall; `scroll` is the first line shown when the content is still too tall."""
     iw, ih = cols - 4, rows - 2
     # Step down until it fits: airy, tight, two columns (wide only), no sparklines, no sparklines in two columns.
@@ -12095,7 +12369,8 @@ def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRout
         steps.append((False, True, False))
     lines: list[str] = []
     for spark, two_up, airy in steps:
-        lines, _at, _n = usage_lines(quota, quota_ok, openrouter, openrouter_ok, 0, iw, now, history, spark, two_up, airy)
+        lines, _at, _n = usage_lines(quota, quota_ok, openrouter, openrouter_ok, 0, iw, now, history, spark, two_up, airy,
+                                     spend=spend, spend_ok=spend_ok)
         if len(lines) <= ih:
             break
     first = min(max(int(scroll), 0), max(0, len(lines) - ih))
@@ -12322,6 +12597,7 @@ class _og_Cells:
     harn: str = ""
     model: str = ""
     ctx_pct: int | None = None
+    ctx_tokens: int | None = None     # the context size itself; the CTX cell shows it, coloured by ctx_pct
     ctx_has_data: bool = False        # raw ctx exists even when window is missing (cell still draws `—`)
     tokens: int | None = None
     cost: float | None = None
@@ -12415,7 +12691,7 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     local = _og_local(wk.family, wk.account, log.harness, wk.model, log.model)
     return _og_Cells(
         tag=wk.level_tag or "WORKER", harn=_og_worker_harness(wk), model=model, ctx_pct=ctx,
-        ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
+        ctx_tokens=log.ctx_tokens, ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
         tokens=tokens, cost=log.cost, cost_note="local" if local else "", elapsed=_og_worker_elapsed(wk, now),
         tools=tools, pulses=list(log.tool_pulses), now=step.text if step else "",
         now_age=max(0.0, now - log.last_ts) if step and log.last_ts else None, live=live,
@@ -12436,7 +12712,8 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     stamp, text = stage.doing[-1] if live and stage.doing else (0.0, "")
     local = _og_local(stage.tag, stage.lead_kind, stage.vitals.provider if stage.vitals else "", model, name)
     return _og_Cells(
-        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
+        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx,
+        ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
         tokens=stage.lead_tokens, cost=stage.lead_cost,
         cost_note="local" if local else "", elapsed=_og_stage_elapsed(stage, now),
         tools=stage.lead_tools, pulses=pulse, now=text, now_age=max(0.0, now - stamp) if stamp else None, live=live,
@@ -12451,7 +12728,7 @@ def _og_cell_values(plan: _og_Plan, cells: _og_Cells, now: float) -> dict[str, s
         "harn": _wd_c(_og_rpad(cells.harn or "—", 5), harn_color if cells.harn else _wd_C_FAINT),
         "model": _wd_c(_og_rpad(_wd_trunc(cells.model or "—", plan.model_w), plan.model_w),
                        _wd_C_MUTED if cells.model else _wd_C_FAINT),
-        "ctx": _og_ctx_cell(cells.ctx_pct),
+        "ctx": _og_ctx_cell(cells.ctx_tokens, cells.ctx_pct),
     }
     out["tokens"] = _og_money_or_count(_wd_fmt_tok(cells.tokens) if cells.tokens is not None else "—", 6,
                                        cells.tokens is not None, _wd_C_MUTED)
@@ -12663,11 +12940,19 @@ def _og_harn_color(harn: str) -> tuple[int, int, int]:
     return _wd_C_MUTED
 
 
-def _og_ctx_cell(pct: int | None) -> str:
-    if pct is None:
+def _og_ctx_cell(tokens: int | None, pct: int | None) -> str:
+    """The context size (`84k`), shaded by how full the window is; plain when the window is unknown."""
+    if tokens is None:
         return _og_metric("—", 4, _wd_C_FAINT, right=True)
-    color = _wd_C_RED if pct >= 90 else _wd_C_AMBER if pct >= 70 else _wd_C_SUB
-    return _og_metric(f"{pct}%", 4, color, right=True)
+    return _og_metric(_wd_fmt_tok(tokens), 4, _wd_ctx_color(pct), right=True)
+
+
+def _og_ctx_text(cells: object) -> str:
+    """`82k · 41%` for the detail views; `82k` without a window, empty when unknown."""
+    tokens, pct = getattr(cells, "ctx_tokens", None), getattr(cells, "ctx_pct", None)
+    if tokens is None:
+        return "" if pct is None else f"{pct}%"
+    return _wd_fmt_tok(tokens) + ("" if pct is None else f" · {pct}%")
 
 
 def _og_worker_elapsed(wk: Worker, now: float) -> str:
@@ -12856,7 +13141,19 @@ _CX_READ_ERRORS = (OSError, ValueError, TypeError, KeyError, subprocess.Subproce
 _CX_RESUME = re.compile(r"(codex resume|claude --resume) ([A-Za-z0-9][A-Za-z0-9._:-]{0,127})")
 _CX_STOPS: dict[int, float] = {}   # pid -> time a stop was sent to it in this process
 _CX_LAUNCHED: list[subprocess.Popen] = []   # launches are never waited on; old ones are polled so they do not pile up
+_CX_DEMO = False   # the tutorial: every action reports what it would do and does nothing (see cx_set_demo)
 _cac_PIDFD = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")   # Linux 5.3+; tests flip it
+
+
+def cx_set_demo(on: bool) -> None:
+    """Tutorial mode. can() skips the /proc checks (the demo rows carry made-up pids), run() and spawn() send no signal,
+    start no process and write no log, and spawn_choices() returns a fixed list. Nothing outside this module sets it."""
+    global _CX_DEMO
+    _CX_DEMO = bool(on)
+
+
+def cx_is_demo() -> bool:
+    return _CX_DEMO
 
 
 @dataclass
@@ -13031,7 +13328,7 @@ def can(action: str, target: Target, *, now: float | None = None,
     if action not in ACTIONS:
         return False, "unknown action"
     if action == "spawn":
-        if target.cwd and os.path.isdir(target.cwd):
+        if _CX_DEMO or (target.cwd and os.path.isdir(target.cwd)):
             return True, ""
         return False, "no such directory"
     if action == "resume":
@@ -13043,6 +13340,19 @@ def can(action: str, target: Target, *, now: float | None = None,
             return False, "session is running"
         return True, ""
     pid = target.pid
+    if _CX_DEMO:   # same rules as below on the made-up row, without touching /proc
+        if not pid:
+            return False, "no pid"
+        if not target.live:
+            return False, "not running"
+        if action == "kill":
+            stopped = _CX_STOPS.get(pid)
+            if stopped is None:
+                return False, "send stop first"
+            waited = (time.time() if now is None else now) - stopped
+            if waited < _CX_STOP_GRACE_S:
+                return False, f"stop was {waited:.0f}s ago, wait {_CX_STOP_GRACE_S:.0f}s"
+        return True, ""
     if not pid:
         return False, "no pid"
     if not target.live:
@@ -13179,6 +13489,12 @@ def run(action: str, target: Target, now: float | None = None, *, kill: Callable
     for the pid right before signalling. Appends to the actions log whatever the outcome."""
     ts = time.time() if now is None else now
     ok, why = can(action, target, now=ts)
+    if _CX_DEMO:
+        if not ok:
+            return f"refused: {why}"
+        if action == "stop" and target.pid:
+            _CX_STOPS[target.pid] = ts
+        return f"demo: {action} of {target.label} not sent. A real {action} would have run."
     if not ok:
         return _cac_result(action, target, f"refused: {why}", ts)
     if action == "spawn":
@@ -13283,6 +13599,9 @@ def spawn_choices(runner: Callable[[list[str]], str] | None = None, *, guards_pa
                   models_path: str | None = None) -> list[Choice]:
     """The spawn picker: every id in $STATION_HOME/picker/guards.json allowedModels, ok=False with a reason for models under
     5% headroom or never-jobs, using `quota pick`/`quota status` output (runner replaces the subprocess)."""
+    if _CX_DEMO:
+        return [Choice("luna", "luna (medium)", True), Choice("haiku", "haiku", True),
+                Choice("sonnet", "sonnet (medium)", False, "headroom 3%"), Choice("opus", "opus (medium)", True)]
     guards_path = guards_path or _CX_GUARDS
     models_path = models_path or _CX_MODELS
     if not os.path.isfile(os.path.expanduser(guards_path)) or not os.path.isfile(os.path.expanduser(models_path)):
@@ -13355,6 +13674,8 @@ def spawn(model_id: str, project_dir: str, task_text: str, now: float | None = N
           models_path: str | None = None) -> str:
     """Start a new worker/session through dispatch / launch-session with the chosen model; refuses ids that are not ok."""
     ts = time.time() if now is None else now
+    if _CX_DEMO:
+        return f"demo: spawn of {model_id} not started. A real spawn would have launched it."
     project_dir = os.path.abspath(os.path.expanduser(project_dir or "."))
 
     def refuse(why: str, cli: str = "", name: str = "") -> str:
@@ -13657,8 +13978,8 @@ def _cpn_ctx_body(row: _cpn_Row, cols: int) -> str:
     if row.ctx is None and row.ctx_window is None:
         return _cpn_unknown()
     if row.ctx_window:
-        used = f"{pct}%" if pct is not None else "—"
-        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_C_TEXT)
+        used = _wd_fmt_tok(row.ctx) if row.ctx is not None else "—"
+        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_ctx_color(pct))
         if pct is not None:
             width = min(14, max(4, cols - 34))
             body += " " + _wd_gauge_bar(pct / 100, width, _wd_pct_color(pct))
@@ -14243,7 +14564,7 @@ def command_lines(worker: Worker, width: int, expanded: bool, cont: str = "", te
 
 
 HINT = (
-    "d details · Tab focus · ←→ pane tabs · 1-6 pane tab · "
+    "w station · d details · Tab focus · ←→ pane tabs · 1-6 pane tab · "
     "[ ] strip tab · E strip · v classic · ? keys"
 )
 _CX_ACTION_HINT = "s stop · n spawn · r resume · K kill"
@@ -14294,7 +14615,7 @@ def hint_line(ui: UIState, width: int) -> str:
         return _cx_line(ui.note, width, _wd_C_TEXT)
     if ui.cc_spawn:
         return _cx_line(_CX_SPAWN, width, _wd_C_TEXT)
-    return _wd_fit(_wd_c(_cx_hint(width, ui.allow_actions), _wd_C_DIM), width)
+    return _wd_fit(_wd_c(_cx_hint(width, ui.actions_on()), _wd_C_DIM), width)
 
 
 
@@ -14435,15 +14756,17 @@ except ModuleNotFoundError:
 _now = time.time
 _CX_CHOICES: list[Choice] = []
 _CX_CHOICES_AT: float | None = None
+_CX_CHOICES_DEMO = False
 
 
 def choices() -> list[Choice]:
     """The picker list from `ccactions.spawn_choices()`, cached for 30 s (loaded by spawn_open)."""
-    global _CX_CHOICES, _CX_CHOICES_AT
+    global _CX_CHOICES, _CX_CHOICES_AT, _CX_CHOICES_DEMO
     now = _now()
-    if _CX_CHOICES_AT is None or now - _CX_CHOICES_AT > 30:
+    if _CX_CHOICES_AT is None or now - _CX_CHOICES_AT > 30 or _CX_CHOICES_DEMO != cx_is_demo():
         _CX_CHOICES = ccactions.spawn_choices()
         _CX_CHOICES_AT = now
+        _CX_CHOICES_DEMO = cx_is_demo()
     return _CX_CHOICES
 
 
@@ -14455,7 +14778,7 @@ def project_dir_of(gs: GlobalSnapshot, row_key: str) -> str:
     if stage is None:
         return ""
     for path in (stage.cwd, stage.dir, stage.path):
-        if path and os.path.isdir(path):
+        if path and (cx_is_demo() or os.path.isdir(path)):
             return path
     return ""
 
@@ -14761,7 +15084,7 @@ def _cxk_dispatch(ui: UIState, key: str, gs: GlobalSnapshot, rows: int, sel: tup
     r resume, y/n/esc on ui.cc_confirm, the spawn picker's up/down/enter/esc, pgup/pgdn/wheel scroll of the focused part.
     Every action goes through ccactions.can / confirm_text / run and shows its result in ui.note. `sel` is the selected tree row."""
     global _CXK_PENDING
-    if not ui.allow_actions:
+    if not ui.actions_on():
         if ui.cc_spawn:
             spawn_cancel(ui)
             ui.cc_confirm = None
@@ -14888,6 +15211,376 @@ def cc_pointer(ui: UIState, action: str, target: str) -> list[str]:
     elif action == "ccstrip" and target in STRIP_TABS:
         ui.cc_strip, ui.cc_strip_scroll, ui.cc_focus = target, 0, "strip"
     return []
+
+
+
+# ──────────────────── tutorial ────────────────────
+"""Interactive tutorial (`station --tutorial`): a step card drawn over the real control center on demo data.
+Imports model, widgets, ccpane and ccstrip only. app.py offers every key to `tut_key` first, then calls `tut_after_key`;
+render.py calls `tut_overlay`. Nothing moves on by itself: a step's goal ticks it done, and only the next key moves on.
+A step that asks for a menu is done only once you have been in that menu (`UIState.tut_seen` remembers where you went)."""
+
+
+
+_tu_NEXT, _tu_BACK = (".", ">"), (",", "<")
+_tu_RESTART, _tu_SKIP, _tu_QUIT = "R", "S", "Q"
+_tu_CARD_W = 80
+_tu_Rows = Callable[[], list[tuple[str, str, str]]]   # the tree rows now: (stage path, kind, name)
+
+
+def _tu_snapshot(ui: UIState) -> tuple:
+    """The state steps compare against, taken when the step starts."""
+    return (ui.gsel, frozenset(ui.gopen_keys), frozenset(ui.gshut_keys), frozenset(ui.gfolded), frozenset(ui.gopen))
+
+
+def _tu_pick(rows: _tu_Rows, ui: UIState, kind: str, path_has: str = "") -> None:
+    """Put the cursor on the first row of this kind (whose stage path holds `path_has`); stays put when there is none."""
+    for i, (path, k, _name) in enumerate(rows()):
+        if k == kind and path_has in path:
+            ui.gsel = i
+            return
+
+
+def _tu_clean(ui: UIState, rows: _tu_Rows) -> None:
+    """Every step starts from the same screen: the control center, nothing open, nothing typed, default folds."""
+    ui.cc = True
+    ui.gpage, ui.view, ui.scroll, ui.detail_text = "", "overview", 0, []
+    ui.gturn, ui.gworker, ui.gsess, ui.sel = "", "", False, 0
+    ui.help, ui.gedit, ui.gquery, ui.gfilter = False, False, "", "all"
+    ui.cc_pane_open, ui.cc_focus, ui.cc_tab = False, "table", "Overview"
+    ui.cc_strip_open, ui.cc_strip, ui.cc_strip_scroll, ui.cc_pane_scroll = True, "Usage", 0, 0
+    ui.cc_confirm, ui.cc_spawn, ui.cc_spawn_model, ui.cc_input, ui.cc_spawn_row = None, False, "", "", ""
+    ui.close_ask, ui.note = None, ""
+    ui.gopen_keys, ui.gshut_keys, ui.gfolded, ui.gopen = set(), set(), set(), set()
+    ui.ghide_idle = ui.ghide_closed = False
+    ui.gsel = 0
+
+
+def _tu_setup(*extra: Callable[[UIState, _tu_Rows], None]) -> Callable[[UIState, _tu_Rows], None]:
+    def run(ui: UIState, rows: _tu_Rows) -> None:
+        _tu_clean(ui, rows)
+        for fn in extra:
+            fn(ui, rows)
+    return run
+
+
+def _tu_on_stage(ui: UIState, rows: _tu_Rows) -> None:
+    _tu_pick(rows, ui, "stage", "demo-project")
+
+
+def _tu_on_worker(ui: UIState, rows: _tu_Rows) -> None:
+    _tu_pick(rows, ui, "worker")
+
+
+def _tu_on_closed(ui: UIState, rows: _tu_Rows) -> None:
+    ui.gopen.add(("", "more", "finished:/demo/old-spike"))   # finished sessions sit behind a one-line fold; open the one the step needs
+    _tu_pick(rows, ui, "stage", "old-spike")
+
+
+def _tu_in_station(ui: UIState, rows: _tu_Rows) -> None:
+    """Start inside the station view of the demo project, its live workers open (what w does from the list)."""
+    for path, kind, _name in rows():
+        if kind == "stage" and "demo-project" in path:
+            ui.gpage, ui.gstage, ui.view, ui.tab, ui.follow = "stage", path, "overview", "live", True
+            ui.expanded = {name for p, k, name in rows() if p == path and k == "worker"}
+            return
+
+
+def _tu_pane_open(ui: UIState, rows: _tu_Rows) -> None:
+    ui.cc_pane_open = True
+    ui.tut_seen.add(ui.cc_tab)
+
+
+def _tu_strip_seen(ui: UIState, rows: _tu_Rows) -> None:
+    ui.tut_seen.add(ui.cc_strip)
+
+
+# -- goals ---------------------------------------------------------------------------------------------------------
+def _tu_moved(ui: UIState) -> bool:
+    return ui.gsel != ui.tut_base[0]
+
+
+def _tu_folded(ui: UIState) -> bool:
+    return (frozenset(ui.gopen_keys), frozenset(ui.gshut_keys), frozenset(ui.gfolded), frozenset(ui.gopen)) != ui.tut_base[1:5]
+
+
+def _tu_visit(page: str) -> Callable[[UIState, str], None]:
+    """Track: note when the page was open."""
+    def track(ui: UIState, key: str) -> None:
+        if ui.gpage == page:
+            ui.tut_seen.add("in")
+    return track
+
+
+def _tu_back_from_page(ui: UIState) -> bool:
+    return "in" in ui.tut_seen and ui.gpage == ""
+
+
+def _tu_track_station(ui: UIState, key: str) -> None:
+    if ui.gpage == "stage" and ui.view in ("lead", "cost", "files"):
+        ui.tut_seen.add(ui.view)
+
+
+def _tu_track_tabs(ui: UIState, key: str) -> None:
+    if ui.cc_pane_open:
+        ui.tut_seen.add(ui.cc_tab)
+
+
+def _tu_track_strip(ui: UIState, key: str) -> None:
+    if ui.cc_strip_open:
+        ui.tut_seen.add(ui.cc_strip)
+
+
+def _tu_checklist(names: tuple[str, ...]) -> Callable[[UIState], str]:
+    def line(ui: UIState) -> str:
+        return "   ".join(("✔ " if n in ui.tut_seen else "· ") + n for n in names)
+    return line
+
+
+def _tu_track_quota(ui: UIState, key: str) -> None:
+    if ui.view == "quota":
+        ui.tut_seen.add("in")
+
+
+def _tu_track_keys(*wanted: str) -> Callable[[UIState, str], None]:
+    def track(ui: UIState, key: str) -> None:
+        if key in wanted:
+            ui.tut_seen.add(key)
+    return track
+
+
+def _tu_track_note(**prefixes: str) -> Callable[[UIState, str], None]:
+    """Track: ui.note starting with one of the prefixes (what the action reported) marks that name seen."""
+    def track(ui: UIState, key: str) -> None:
+        for name, prefix in prefixes.items():
+            if ui.note.startswith(prefix):
+                ui.tut_seen.add(name)
+    return track
+
+
+def _tu_track_end(ui: UIState, key: str) -> None:
+    if key == "x":
+        ui.tut_seen.add("x")
+    elif "x" in ui.tut_seen and key in ("y", "n", "esc"):
+        ui.tut_seen.add("answered")
+
+
+def _tu_all(*names: str) -> Callable[[UIState], bool]:
+    return lambda ui: all(n in ui.tut_seen for n in names)
+
+
+@dataclass(frozen=True)
+class TutStep:
+    title: str
+    text: tuple[str, ...]
+    ask: str = ""                                                    # what to do; "" = a reading step, next works at once
+    done: Callable[[UIState], bool] | None = None                    # the goal; once true it stays true for the step
+    track: Callable[[UIState, str], None] | None = None              # runs after every key: remembers where you went
+    progress: Callable[[UIState], str] | None = None                 # an extra line (a checklist)
+    setup: Callable[[UIState, _tu_Rows], None] = _tu_clean           # the screen the step starts from
+    at: str = "bottom"                                               # where the card sits: "bottom" or "top"
+
+
+_tu_STEPS: tuple[TutStep, ...] = (
+    TutStep("Welcome",
+            ("This is the real monitor on made-up sessions, so nothing here can touch your own work.",
+             "Nothing moves on by itself. Each step asks you to do one thing and ticks when you have; then press . for the next step.",
+             "If you get lost, R puts the step back the way it started. S skips a step, , goes back, Q leaves.",
+             "Tip: w opens the station view, the fullest page for one session. It has its own step.")),
+    TutStep("How the screen is laid out",
+            ("Top: counts of live, idle and finished sessions, then the quota bar for each account, then the filter chips.",
+             "Middle: one block per project. Each session is a row; a session that started helpers (workers) lists them underneath.",
+             "Bottom: a strip of usage, events, logs and metrics, then the key line. The key line changes with where you are.")),
+    TutStep("Reading a row",
+            ("LEAD is the session you talk to. WORKER is a helper it started. HARN is the tool (CC·P Claude personal, CDX Codex, OCode, Cursr).",
+             "The mark in front of a worker is its state: a spinner is running, ○ quiet for a while, ✖ failed, ✔ finished.",
+             "CTX and TOKENS say how full the context is and what it has used; COST is money spent; TOOLS counts tool calls.")),
+    TutStep("Move the cursor",
+            ("The highlighted row is the cursor. Almost everything you do acts on the row under it.",),
+            "Press ↑ or ↓ (j and k also work)", _tu_moved),
+    TutStep("Fold and unfold",
+            ("A live session shows its workers; a quiet one is a single line. Fold and unfold to show more or less.",
+             "Enter flips the row under the cursor. → opens it and ← shuts it."),
+            "Press Enter on a project or session row", _tu_folded),
+    TutStep("The station view",
+            ("w opens the station view of the session under the cursor: a live card for every worker with what it is doing now, a timeline of activity, and the reviews.",
+             "It is the fullest picture of one session. Move with ↑↓, Enter folds a card, Esc goes back to the list. On a project heading, w opens its first session."),
+            "Press w, look around, then press Esc",
+            _tu_back_from_page, _tu_visit("stage"), None, _tu_setup(_tu_on_stage)),
+    TutStep("Pages inside the station view",
+            ("From the station view, L opens the lead page (the session's own prompt and recent actions), C the cost page (tokens and money per worker) and F the files page (the files each worker changed, with the diff size). The lead and files pages show example data in the tutorial.",
+             "Esc comes back to the station view. t folds the timeline and r the reviews. Visit L, C and F."),
+            "Press L, then Esc, then C, then Esc, then F",
+            _tu_all("lead", "cost", "files"), _tu_track_station, _tu_checklist(("lead", "cost", "files")),
+            _tu_setup(_tu_in_station)),
+    TutStep("The session page",
+            ("Space opens a full page for the session: its goal, what it is doing now, every worker and the milestones.",
+             "On that page ↑↓ scroll and Enter opens a worker. Esc goes back to the list."),
+            "Press Space on the highlighted session, look around, then press Esc",
+            _tu_back_from_page, _tu_visit("sess"), None, _tu_setup(_tu_on_stage)),
+    TutStep("The worker page",
+            ("Put the cursor on a worker (the indented rows) and press Space for its page: brief, result, and every step it took.",
+             "There b opens the brief, r the report and f the files it touched. Esc goes back."),
+            "Press ↓ to a WORKER row, press Space, then Esc",
+            _tu_back_from_page, _tu_visit("wk"), None, _tu_setup(_tu_on_worker)),
+    TutStep("The details pane",
+            ("d opens a pane on the right with everything about the selected row, so you do not have to leave the list.",
+             "It follows the cursor: move up and down and the pane changes with you."),
+            "Press d", lambda ui: ui.cc_pane_open),
+    TutStep("The six pane tabs",
+            ("The pane has six tabs: Overview, Prompt (what the session was asked), Tools (every call), Files, Events and Metrics.",
+             "Tab moves focus into the pane. Then ← → step through the tabs, or press 1 to 6 to jump to one. Visit all six."),
+            "Press Tab, then use ← → or 1-6",
+            _tu_all(*PANE_TABS), _tu_track_tabs, _tu_checklist(PANE_TABS), _tu_setup(_tu_on_worker, _tu_pane_open)),
+    TutStep("The bottom strip",
+            ("The strip under the list has four tabs: Usage (quota per account), Events (what just happened), Logs and Metrics.",
+             "[ and ] switch tab. E hides or shows the strip. Tab moves focus into it so the arrows scroll it. Visit all four."),
+            "Press ] (or [) until you have seen every tab",
+            _tu_all(*STRIP_TABS), _tu_track_strip, _tu_checklist(STRIP_TABS), _tu_setup(_tu_strip_seen), "top"),
+    TutStep("Search",
+            ("/ searches by project, stream, lead or model. Type a word, then Enter keeps it. Try api or docs.",
+             "Esc clears the search again."),
+            "Press /, type a word, press Enter", lambda ui: bool(ui.gquery) and not ui.gedit),
+    TutStep("Filter",
+            ("Filters narrow the list to a kind of session: 1 all, 2 working, 3 lagging (quiet too long), 4 problems.",
+             "f cycles through them. Esc goes back to all."),
+            "Press 2, 3 or 4", lambda ui: ui.gfilter != "all"),
+    TutStep("Quota",
+            ("u opens the quota page: for each account, how much of the 5-hour and weekly allowance is used, and when it resets.",
+             "Press u again, or Esc, to come back."),
+            "Press u, then u or Esc to come back",
+            lambda ui: "in" in ui.tut_seen and ui.view == "overview", _tu_track_quota),
+    TutStep("Show more or less",
+            ("c shuts every session and project. e opens them all, idle and closed ones too.",
+             "h hides the idle section, H the closed one, a shows all history."),
+            "Press c, then e", _tu_all("c", "e"), _tu_track_keys("c", "e"), _tu_checklist(("c", "e"))),
+    TutStep("Stop and kill (asks first)",
+            ("s on a session or worker asks 'Stop … ?'. Answer y to send it. Anything else cancels. Stop asks it to quit nicely.",
+             "K kills it for good, but only after a stop was sent and a few seconds have passed. That is the real question; in the tutorial y sends nothing and tells you what would have happened.",
+             "So: press s, then y. Wait three seconds, press K, then y."),
+            "Press s then y, then wait 3 seconds, then K and y",
+            _tu_all("stop", "kill"), _tu_track_note(stop="demo: stop", kill="demo: kill"),
+            _tu_checklist(("stop", "kill")), _tu_setup(_tu_on_worker)),
+    TutStep("Resume a closed session",
+            ("A session that has ended can be picked up again. r asks 'Resume … in a new terminal?' and shows the exact command.",
+             "It only works on a closed session. The cursor is on one now: old-spike, under the project's finished line."),
+            "Press r, then y", _tu_all("resume"), _tu_track_note(resume="demo: resume"),
+            None, _tu_setup(_tu_on_closed)),
+    TutStep("Spawn a new worker",
+            ("n starts something new in the project under the cursor. First you pick a model with ↑↓ and Enter. Greyed ones are out of quota, and it says why.",
+             "Then you type one line of task, Enter, and confirm with y. Keys such as . are typed as text while you type the task."),
+            "Press n, pick a model, type a task, Enter, then y",
+            _tu_all("spawn"), _tu_track_note(spawn="demo: spawn"), None, _tu_setup(_tu_on_stage)),
+    TutStep("End a session",
+            ("x ends the lead session of the row under the cursor, after a box asking you to confirm.",
+             "y ends it, anything else cancels. Here y ends nothing."),
+            "Press x, then y or n", _tu_all("answered"), _tu_track_end, None, _tu_setup(_tu_on_stage)),
+    TutStep("Classic view",
+            ("v flips between this control center and the older plain tree with no side pane or strip. The same sessions show in both.",
+             "Look around, then press . for the next step, which puts you back in the control center."),
+            "Press v", lambda ui: not ui.cc),
+    TutStep("The key list",
+            ("? shows every key in one box, grouped. It is the quickest way to find a key you forgot.",
+             "Any key closes it."),
+            "Press ?", lambda ui: ui.help),
+    TutStep("You are set",
+            ("That is every screen. Remember w for the station view and ? for the key list. The mouse works too: click a row, double-click to open it, wheel to scroll.",
+             "Not in the demo: OpenClaw sessions have a turn-by-turn page, and 5 shows OpenRouter spend when it is set up.",
+             "Run `station --tutorial` any time to come back. docs/monitor-control-center.md has the full key list. Press . to finish.")),
+)
+
+
+def tut_start(ui: UIState, rows: _tu_Rows) -> None:
+    ui.tut = 0
+    _tu_enter(ui, rows)
+
+
+def _tu_enter(ui: UIState, rows: _tu_Rows) -> None:
+    ui.tut_seen, ui.tut_ok = set(), False
+    _tu_STEPS[ui.tut].setup(ui, rows)
+    ui.tut_base = _tu_snapshot(ui)
+    if _tu_STEPS[ui.tut].done is None:
+        ui.tut_ok = True
+
+
+def _tu_go(ui: UIState, index: int, rows: _tu_Rows) -> None:
+    if index >= len(_tu_STEPS):
+        ui.tut = -1
+        ui.note = "tutorial finished"
+        return
+    ui.tut = max(0, index)
+    _tu_enter(ui, rows)
+
+
+def tut_active(ui: UIState) -> bool:
+    return 0 <= ui.tut < len(_tu_STEPS)
+
+
+def tut_key(ui: UIState, k: str, rows: _tu_Rows) -> bool:
+    """True when the tutorial used the key. Typing in the search box or a task, and the open ? box, keep their own keys."""
+    if not tut_active(ui) or ui.gedit or ui.help or (ui.cc_spawn and ui.cc_spawn_model):
+        return False
+    if k in _tu_NEXT:
+        if ui.tut_ok:
+            _tu_go(ui, ui.tut + 1, rows)
+        else:
+            ui.note = "do the step first (the ▶ line), or press S to skip it"
+        return True
+    if k in _tu_BACK:
+        _tu_go(ui, ui.tut - 1, rows)
+        return True
+    if k == _tu_RESTART:
+        _tu_enter(ui, rows)
+        return True
+    if k == _tu_SKIP:
+        _tu_go(ui, ui.tut + 1, rows)
+        return True
+    if k == _tu_QUIT:
+        ui.tut = -1
+        ui.note = "tutorial left"
+        return True
+    return False
+
+
+def tut_after_key(ui: UIState, key: str = "") -> None:
+    """Call after the app handled a key: remember where you went, and tick the step when its goal shows."""
+    if not tut_active(ui):
+        return
+    step = _tu_STEPS[ui.tut]
+    if step.track is not None:
+        step.track(ui, key)
+    if not ui.tut_ok and step.done is not None and step.done(ui):
+        ui.tut_ok = True
+
+
+def tut_overlay(lines: list[str], ui: UIState, cols: int, rows: int) -> list[str]:
+    """The step card over the frame: bottom left by default, top left for steps whose subject is at the bottom."""
+    if not tut_active(ui) or cols < 30 or rows < 10:
+        return lines
+    step = _tu_STEPS[ui.tut]
+    inner = min(_tu_CARD_W, cols) - 4
+    body: list[str] = []
+    for para in step.text:
+        body.extend(" " + _wd_c(row, _wd_C_TEXT) for row in _wd_wrap(para, inner - 1))
+    body.append("")
+    if step.progress is not None:
+        body.append(" " + _wd_c(step.progress(ui), _wd_C_SUB))
+    if step.ask:
+        body.append(" " + (_wd_c("✔ Done. Press . for the next step", _wd_C_GREEN, bold=True) if ui.tut_ok
+                           else _wd_c("▶ " + step.ask, _wd_C_AMBER, bold=True)))
+    keys = ["R restart", "S skip", ", back", "Q leave"] if not ui.tut_ok and step.ask else (
+        [". next", ", back", "R restart", "Q leave"] if step.ask else [". next", ", back", "Q leave"])
+    body.append(" " + _wd_c("   ".join(keys), _wd_C_MUTED))
+    w = min(cols, _tu_CARD_W)
+    h = min(rows - 2, len(body) + 2)
+    title = _wd_c(f"tutorial {ui.tut + 1}/{len(_tu_STEPS)}", _wd_C_BLUE, bold=True) + _wd_c(" ── " + step.title, _wd_C_SUB)
+    box = _wd_box([_wd_pad(x, w - 2) for x in body[:h - 2]], w, h, title, _wd_C_GREEN if ui.tut_ok else _wd_C_BLUE)
+    top = 5 if step.at == "top" else max(0, rows - 1 - h)
+    out = list(lines)
+    for i, row in enumerate(box):
+        if top + i < len(out):
+            out[top + i] = row + " " * max(0, cols - w)
+    return out
 
 
 
@@ -15239,7 +15932,7 @@ def _wv_metrics(wk: Worker, cells: object, cols: int) -> list[str]:
         _wv_field("ELAPSED", _wv_val(cells.elapsed, _wd_C_TEXT)),
         _wv_field("TOOLS", _wv_val("" if tools is None else str(tools), _wd_C_TEXT)),
         _wv_field("TOKENS", _wv_val("" if tokens is None else _wd_fmt_tok(tokens), _wd_C_TEXT)),
-        _wv_field("CTX", _wv_val("" if ctx is None else f"{ctx}%", _wd_C_SUB)),
+        _wv_field("CTX", _wv_val(_og_ctx_text(cells), _wd_ctx_color(ctx))),
         _wv_field("COST", cost),
         _wv_field("FLAGS", _wd_c(flags, _wd_C_AMBER) if flags else _wd_c("none", _wd_C_FAINT)),
     ]
@@ -15423,7 +16116,7 @@ def _sv_metrics(stage: Stage, cells: object, cols: int) -> list[str]:
         _wv_field("ELAPSED", _wv_val(cells.elapsed, _wd_C_TEXT)),
         _wv_field("TOOLS", _wv_val("" if tools is None else str(tools), _wd_C_TEXT)),
         _wv_field("TOKENS", _wv_val("" if tokens is None else _wd_fmt_tok(tokens), _wd_C_TEXT)),
-        _wv_field("CTX", _wv_val("" if ctx is None else f"{ctx}%", _wd_C_SUB)),
+        _wv_field("CTX", _wv_val(_og_ctx_text(cells), _wd_ctx_color(ctx))),
         _wv_field("COST", cost_txt),
     ]
     return _wv_wrap(fields, cols)
@@ -15591,6 +16284,9 @@ _rd_HELP = (
     ("", "FIND"),
     ("/", "search by text (Enter keeps it, Esc clears)"),
     ("1 2 3 4", "filter: all, working, lagging, problems; f cycles them"),
+    ("", "STATION VIEW"),
+    ("w", "open the station view of the row's session: live worker cards, timeline, reviews"),
+    ("L C F", "inside it: lead page, cost page, files page; t timeline, r reviews; Esc goes back"),
     ("", "DETAILS  (control center)"),
     ("d", "show or hide the details pane; Tab moves focus: list, pane, strip"),
     ("← →", "with the pane focused: its tabs. ↑↓ scroll it"),
@@ -16097,7 +16793,7 @@ def _rd_fold_line(title: str, count: int, cols: int, selected: bool) -> str:
 def _rd_help_overlay(lines: list[str], cols: int, rows: int, ui: UIState) -> list[str]:
     """The ? box, centred over the frame. Its rows replace the frame rows they cover."""
     help_rows = _rd_HELP
-    if not ui.allow_actions:
+    if not ui.actions_on():
         help_rows = tuple((k, v) for k, v in _rd_HELP if k not in ("s  K", "r  n", "x"))
         help_rows = tuple((k, "ACT  (needs --allow-actions)" if v.startswith("ACT  ") else v)
                           for k, v in help_rows)
@@ -17282,23 +17978,40 @@ def _rd_openrouter_worker(wk: Worker) -> bool:
     return raw.startswith(("openrouter/", "deepseek-or@")) or raw == "deepseek-or"
 
 
-def _rd_openrouter_chip(snap: OpenRouterSnapshot) -> tuple[str, bool, bool]:
+def _rd_spend_chip(snap: SpendSnapshot) -> tuple[str, bool, bool]:
     """(text without ANSI, alert colour, stale) for the masthead usage line."""
-    if snap.balance is None:
+    name = snap.provider or OPENROUTER_ACCOUNT
+    if snap.balance is not None:
+        txt = f"{name} ${snap.balance:.2f}"
+        if snap.runs_out_at:
+            txt += " · out " + time.strftime("%b %d", time.gmtime(snap.runs_out_at))
+        alert = snap.low or (snap.floor_usd is not None and snap.balance < snap.floor_usd)
+        return (txt, alert, snap.stale)
+    if snap.month_to_date_usd is not None:
+        return (f"{name} ${snap.month_to_date_usd:.2f} mtd", False, snap.stale)
+    if name == OPENROUTER_ACCOUNT:
         return (f"{OPENROUTER_ACCOUNT} –", False, snap.stale)
-    txt = f"{OPENROUTER_ACCOUNT} ${snap.balance:.2f}"
-    if snap.runs_out_at:
-        txt += " · out " + time.strftime("%b %d", time.gmtime(snap.runs_out_at))
-    alert = snap.low or (snap.floor_usd is not None and snap.balance < snap.floor_usd)
-    return (txt, alert, snap.stale)
+    return (f"{name} –", False, snap.stale)
 
 
-def _rd_openrouter_chip_paint(snap: OpenRouterSnapshot) -> str:
-    text, alert, stale = _rd_openrouter_chip(snap)
+def _rd_openrouter_chip(snap: SpendSnapshot) -> tuple[str, bool, bool]:
+    return _rd_spend_chip(snap)
+
+
+def _rd_spend_chip_paint(snap: SpendSnapshot) -> str:
+    text, alert, stale = _rd_spend_chip(snap)
     body = _wd_c(text, _wd_C_RED if alert else _wd_C_TEXT, bold=True)
     if stale:
         body += _rd_dim(" stale")
     return body
+
+
+def _rd_openrouter_chip_paint(snap: SpendSnapshot) -> str:
+    return _rd_spend_chip_paint(snap)
+
+
+def _rd_spend_masthead_chip(snap: SpendSnapshot) -> bool:
+    return snap.balance is not None or snap.month_to_date_usd is not None
 
 
 def _rd_credit_text(c: QuotaCredit) -> str:
@@ -17862,7 +18575,7 @@ def _rd_build(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, stage
             keys: tuple[tuple[str, str], ...] | list[tuple[str, str]] = _rd_DETAIL_KEYS
         elif view == "quota":
             body = usage_screen(snap.quota, snap.quota_ok, snap.openrouter, snap.openrouter_ok, ui.scroll,
-                                cols, rows - 2, t, snap.usage_history)
+                                cols, rows - 2, t, snap.usage_history, spend=snap.spend, spend_ok=snap.spend_ok)
             keys = _rd_QUOTA_KEYS
         elif view in _rd_PAGES:
             body = _rd_page_body(snap, ui, cols, rows - 2)
@@ -17901,6 +18614,7 @@ def render_frame(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, st
         lines = _rd_build(snap, ui, cols, rows, t, stage)
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
+        lines = tut_overlay(lines, ui, cols, rows)   # the station pages are drawn here, also in the tutorial
     except Exception:   # a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
@@ -18245,7 +18959,7 @@ _rd_G_UNLINKED = 20            # workers an unlinked ("session unknown") group l
 _rd_G_UNLINKED_MORE = "unlinked"   # the unlinked group's fold row name (the finished folds use "finished:<root>")
 _rd_G_SECTION_KEYS = {"idle": "h", "closed": "H"}   # the key that hides each headed section
 _rd_G_STEPS = 3                # recent log steps shown in an open worker
-_rd_G_KEYS = (("↑↓", "move"), ("Enter", "fold"), ("Space", "open"), ("/", "find"), ("1-4", "filter"),
+_rd_G_KEYS = (("↑↓", "move"), ("Enter", "fold"), ("Space", "open"), ("w", "station"), ("/", "find"), ("1-4", "filter"),
               ("h", "hide idle"), ("H", "hide closed"), ("e/c", "all"), ("a", "history"))
 
 
@@ -19187,10 +19901,14 @@ def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
                 + (" " + _wd_c("+$" + (f"{acct.extra.usd:.2f}" if acct.extra.usd is not None else "?"), _wd_C_RED)
                    if acct.extra is not None else ""))
         items.append((text, _rd_ttr(win.resets_at, now)))
-    if gs.openrouter_ok and gs.openrouter is not None and gs.openrouter.balance is not None:
-        items.append((_rd_openrouter_chip_paint(gs.openrouter), ""))
+    spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if gs.spend_ok.get(pid) and gs.spend.get(pid)}
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = gs.spend.get(pid)
+        if not gs.spend_ok.get(pid) or snap is None or not _rd_spend_masthead_chip(snap):
+            continue
+        items.append((_rd_spend_chip_paint(snap), ""))
     for acct in gs.quota:
-        if acct.name == OPENROUTER_ACCOUNT and gs.openrouter_ok and gs.openrouter is not None:
+        if acct.name in spend_shown:
             continue
         if acct.credit is not None and acct.credit.balance is not None:
             items.append((_rd_dim(_wd_clean(acct.name)) + " "
@@ -19237,17 +19955,17 @@ def _rd_g_chips(gs: GlobalSnapshot, ui: UIState, w: int, y: int) -> str:
     for i, width in enumerate(widths):
         _rd_hit(ui, y, y, x, x + width - 1, "key", str(i + 1))
         x += width + 1
-    or_label = "5 openrouter"
-    if ui.view == "openrouter":
-        or_chip = _wd_c("[", _wd_C_BLUE) + _wd_c(or_label, _wd_C_TEXT, bold=True) + _wd_c("]", _wd_C_BLUE)
+    usage_label = "5 usage"      # the usage screen: quota windows plus one section per spend provider
+    if ui.view == "quota":
+        usage_chip = _wd_c("[", _wd_C_BLUE) + _wd_c(usage_label, _wd_C_TEXT, bold=True) + _wd_c("]", _wd_C_BLUE)
     else:
-        or_chip = " " + _rd_dim("5 ") + _rd_muted("openrouter") + " "
-    or_w = len(or_chip) + 2
-    if x + or_w + 10 <= w:
-        _rd_hit(ui, y, y, x, x + or_w - 1, "key", "5")
-        parts.append(or_chip)
-        widths.append(or_w)
-        x += or_w + 1
+        usage_chip = " " + _rd_dim("5 ") + _rd_muted("usage") + " "
+    usage_w = len(usage_chip) + 2
+    if x + usage_w + 10 <= w:
+        _rd_hit(ui, y, y, x, x + usage_w - 1, "key", "5")
+        parts.append(usage_chip)
+        widths.append(usage_w)
+        x += usage_w + 1
     if ui.gedit:
         box = _wd_c("/ ", _wd_C_BLUE) + _wd_c(ui.gquery, _wd_C_TEXT) + _wd_c("▌", _wd_C_BLUE)
     elif ui.gquery:
@@ -19906,6 +20624,7 @@ def render_global(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: floa
             lines = _rd_close_box(lines, gs, ui, cols, rows)
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
+        lines = tut_overlay(lines, ui, cols, rows)
     except Exception:
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
@@ -19967,11 +20686,11 @@ def render_global_plain(gs: GlobalSnapshot, cols: int = 100, rows: int | None = 
     closed = [r for r in _rd_g_all_rows(gs) if r.section == "closed" and not _rd_g_closed_recent(gs, r)]
     if closed or gs.dismissed:
         output.append(_rd_g_closed_text(gs, closed))
-    if gs.openrouter_ok and gs.openrouter is not None:
-        chip, _, stale = _rd_openrouter_chip(gs.openrouter)
-        if stale:
-            chip += " stale"
-        output.append(chip)
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = gs.spend.get(pid)
+        if gs.spend_ok.get(pid) and snap is not None:
+            chip, _, stale = _rd_spend_chip(snap)
+            output.append(chip + (" stale" if stale else ""))
     output.extend(f"collector error: {error}" for error in gs.errors)
     if output and not output[-1]:
         output.pop()
@@ -20148,10 +20867,8 @@ def _identity_dict(item) -> dict:
     return out
 
 
-def _openrouter_dict(snap: OpenRouterSnapshot | None, *, ok: bool) -> dict | None:
-    if not ok or snap is None:
-        return None
-    return {
+def _spend_entry_dict(snap: SpendSnapshot) -> dict:
+    out = {
         "balance": snap.balance,
         "floorUsd": snap.floor_usd,
         "burnPerDayUsd": snap.burn_per_day,
@@ -20171,6 +20888,23 @@ def _openrouter_dict(snap: OpenRouterSnapshot | None, *, ok: bool) -> dict | Non
             for row in snap.per_model
         ],
     }
+    if snap.month_to_date_usd is not None:
+        out["monthToDateUsd"] = snap.month_to_date_usd
+    if snap.budget_limit_usd is not None or snap.budget_used_pct is not None:
+        out["budget"] = {"limitUsd": snap.budget_limit_usd, "usedPct": snap.budget_used_pct}
+    if snap.source is not None:
+        out["source"] = snap.source
+    return out
+
+
+def _openrouter_dict(snap: SpendSnapshot | None, *, ok: bool) -> dict | None:
+    if not ok or snap is None:
+        return None
+    return _spend_entry_dict(snap)
+
+
+def _spend_dict(spend: dict[str, SpendSnapshot], spend_ok: dict[str, bool]) -> dict[str, dict]:
+    return {pid: _spend_entry_dict(snap) for pid, snap in spend.items() if spend_ok.get(pid)}
 
 
 def _counts(workers: list[Worker]) -> dict:
@@ -20375,6 +21109,7 @@ def global_payload(gs: GlobalSnapshot, *, title: str = "all orchestrators",
         "cost_total": gs.cost_total, "hidden_idle": gs.hidden_idle,
         "dismissed": gs.dismissed, "errors": list(gs.errors),
         "openrouter": _openrouter_dict(gs.openrouter, ok=gs.openrouter_ok),
+        "spend": _spend_dict(gs.spend, gs.spend_ok),
         "stages": [_summary_stage(stage, gs.now) for stage in gs.stages],
     }
 
@@ -20917,11 +21652,20 @@ def _ap_help_key(ui: UIState, key: str) -> bool:
 
 
 def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
+    """One key in the global view. In the tutorial the step card sees it first."""
+    if ui.tut >= 0 and key != "ctrl-c" and tut_key(ui, key, lambda: global_rows(gs, ui)):
+        return ""
+    action = _ap_global_key_inner(ui, key, gs, rows)
+    tut_after_key(ui, key)
+    return action
+
+
+def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
     if key == "ctrl-c":
         return "quit"
     ui.note = ""
     if ui.close_ask is not None:   # the end-session box takes every key but ctrl-c until y or n
-        if not ui.allow_actions:
+        if not ui.actions_on():
             ui.close_ask = None
             return ""
         if key == "y":
@@ -21063,6 +21807,9 @@ def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
     if key == "i":
         ui.glegend = not ui.glegend
         return ""
+    if key == "w":   # the station view: live worker cards, timeline and reviews of this session
+        _ap_open_station_from_row(ui, gs, tree)
+        return ""
     if key == "p":   # pin the selected station idle or active, or back to automatic; the main loop runs it (it needs the collector)
         return "pin" if global_rows(gs, ui) else ""
     if key == "esc" and (ui.gquery or ui.gfilter != "all"):
@@ -21142,15 +21889,35 @@ def _ap_global_key(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -> str:
         ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
         ui.pinned.clear()
     elif key in ("o", "space") and kind != "more":
-        ui.gpage, ui.gstage, ui.scroll = "stage", path, 0
-        ui.view, ui.tab, ui.follow = "overview", "live", True
-        ui.pscroll.clear()
-        stage = next((s for s in gs.stages if s.path == path), None)
-        ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
-        ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
-        if stage is not None and kind == "worker":
-            ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == name), 0)
+        _ap_open_station(ui, gs, path, name if kind == "worker" else "")
     return ""
+
+
+def _ap_open_station(ui: UIState, gs: GlobalSnapshot, path: str, worker: str = "") -> None:
+    """The station view of the session at `path`: live worker cards, timeline, reviews; L lead, C cost, F files inside.
+    Esc goes back to the list. `worker` puts the cursor on that worker's card."""
+    ui.gpage, ui.gstage, ui.scroll = "stage", path, 0
+    ui.view, ui.tab, ui.follow = "overview", "live", True
+    ui.pscroll.clear()
+    stage = next((s for s in gs.stages if s.path == path), None)
+    ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+    ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
+    if stage is not None and worker:
+        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == worker), 0)
+
+
+def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[str, str, str]]) -> None:
+    """w on any row: the station view of the row's session. A project heading opens its first session."""
+    if not tree:
+        return
+    i = min(max(ui.gsel, 0), len(tree) - 1)
+    path, kind, name = tree[i]
+    if not path:   # a heading: the first session row below it
+        path, kind, name = next((row for row in tree[i:] if row[0] and row[1] in ("stage", "worker")), ("", "", ""))
+    if path and any(s.path == path for s in gs.stages):
+        _ap_open_station(ui, gs, path, name if kind == "worker" else "")
+    else:
+        ui.note = "w: nothing to open on this row"
 
 
 def _ap_wk_action(ui: UIState, gs: GlobalSnapshot, stage: Stage, wk: Worker, action: str) -> str:
@@ -21401,7 +22168,7 @@ def _ap_close_selected(ui: UIState, gs: GlobalSnapshot, gc: GlobalCollector) -> 
         if stage.live == 0:   # daemon-hosted session: no process to end, so hide it like a gone one
             gc.dismiss(path)
     elif stage.lead_state != "gone":
-        if ui.allow_actions:
+        if ui.actions_on():
             ui.close_ask = (path, stage.lead_pid or 0)
         else:
             ui.note = "ending a session needs --allow-actions"
@@ -21439,7 +22206,7 @@ def _ap_control(gc: GlobalCollector, path: str, action: str, now: float | None =
 
 def _ap_end_lead(ui: UIState, gc: GlobalCollector) -> None:
     """y in the confirm box: SIGTERM the lead, but only after a fresh /proc read still finds that pid as the station's lead."""
-    if not ui.allow_actions:
+    if not ui.actions_on():
         ui.close_ask = None
         ui.note = "ending a session needs --allow-actions"
         return
@@ -21447,6 +22214,9 @@ def _ap_end_lead(ui: UIState, gc: GlobalCollector) -> None:
         return
     path, pid = ui.close_ask
     ui.close_ask = None
+    if ui.demo:   # the tutorial's rows have made-up pids: never signal them
+        ui.note = "demo: the session was not ended. A real y would have ended it."
+        return
     lead = gc.current_lead(path)
     if pid <= 0 or lead is None or lead.pid != pid:
         return
@@ -21496,7 +22266,10 @@ def _ap_page_key(ui: UIState, key: str, rows: int) -> str:
 
 def _ap_load_page(ui: UIState, stage_dir: str, stage: Stage | None, snap: Snapshot | None, now: float) -> None:
     """Read what the open page shows: once on open and on r, never per frame. The cost page is drawn from the snapshot."""
-    if ui.view == "lead":
+    if ui.demo:   # the tutorial's rows have no lead.json, stream file or git to read
+        name = _ap_sel_name(ui, snap) if ui.view == "files" else ""
+        ui.detail_text = demo_page_lines(ui.view, name)
+    elif ui.view == "lead":
         ui.detail_text = lead_page(stage_dir, stage, now)
     elif ui.view == "files":
         name = _ap_sel_name(ui, snap)
@@ -22170,7 +22943,7 @@ def _ap_collector_loop(collector: Collector | GlobalCollector, shared: _ap_Share
 
 def _ap_load_detail(ui: UIState, collector: Collector, snap: Snapshot | None, error: str) -> None:
     if ui.view != "detail" or snap is None or ui.tab == "live" or not 0 <= ui.sel < len(snap.workers):
-        if ui.tab == "live":
+        if ui.tab == "live" and ui.view not in ("lead", "files"):   # those pages are read once on open; a snapshot must not blank them
             ui.detail_text = []
         return
     try:
@@ -22195,7 +22968,7 @@ def _ap_load_global_detail(ui: UIState, collector: GlobalCollector, path: str, n
 
 def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int, interval: float,
                     notify: bool, all_history: bool, density: str = "full",
-                    global_mode: bool = False, *, ui: UIState) -> int:
+                    global_mode: bool = False, tutorial: bool = False, *, ui: UIState) -> int:
     fd_in, fd_out = sys.stdin.fileno(), sys.stdout.fileno()
     stop = threading.Event()
     wake = threading.Event()
@@ -22224,7 +22997,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
     trace = ""
     suspend_requested = threading.Event()
     continued = threading.Event()
-    ui = UIState(density=density, cc=global_mode)
+    ui.density, ui.cc = density, global_mode   # the caller's UIState carries the opt-ins (allow_actions); do not replace it
     expand_path = _ap_expand_path(collector) if global_mode else ""
     expand_save_at = 0.0
 
@@ -22262,6 +23035,9 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
         if global_mode:
             _ap_load_expand(ui, expand_path)
         ui.glevel, ui.glevel_all = _ap_load_levels()
+        if tutorial:
+            ui.demo = True
+            tut_start(ui, lambda: [])
         saved_levels = (dict(ui.glevel), ui.glevel_all)
         prev_lines: list[str] | None = None
         prev_snap: Snapshot | None = None
@@ -22375,8 +23151,9 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
             elif global_mode and gs is not None:
                 stage_snap = _ap_global_stage_snap(gs, ui) if ui.gpage in ("worker", "stage") else None
                 if ui.view == "quota":
-                    quota_snap = Snapshot(quota=gs.quota, quota_ok=gs.quota_ok, openrouter=gs.openrouter,
-                                          openrouter_ok=gs.openrouter_ok, usage_history=gs.usage_history)
+                    quota_snap = Snapshot(quota=gs.quota, quota_ok=gs.quota_ok, spend=gs.spend, spend_ok=gs.spend_ok,
+                                          openrouter=gs.openrouter, openrouter_ok=gs.openrouter_ok,
+                                          usage_history=gs.usage_history)
                     lines = render_frame(quota_snap, ui, cols, rows, now)
                 elif stage_snap is not None and ui.gpage in ("worker", "stage"):
                     if ui.gpage == "worker" and ui.view == "detail":
@@ -22525,6 +23302,7 @@ def _ap_fps(text: str) -> int:
 def _ap_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="station", description="Dashboard for orchestrator worker agents.")
     p.add_argument("--demo", action="store_true", help="show generated demo data")
+    p.add_argument("--tutorial", action="store_true", help="interactive tutorial on demo data")
     p.add_argument("--serve", action="store_true", help="serve the read-only web monitor")
     p.add_argument("--port", type=int, default=8743, help="web monitor port")
     p.add_argument("--host", default="127.0.0.1", help="web monitor bind address")
@@ -22686,6 +23464,26 @@ def _ap_json(args: argparse.Namespace, script_dir: str) -> int:
     return 0
 
 
+def _ap_tutorial(args: argparse.Namespace) -> int:
+    """`--tutorial`: the control center on fake sessions. Every file the app would write (expand choices, levels,
+    density) goes to a scratch directory that is removed afterwards, so the tutorial leaves nothing behind."""
+    if not (sys.stdout.isatty() and sys.stdin.isatty()) or os.environ.get("TERM", "") == "dumb":
+        sys.stderr.write("station --tutorial needs an interactive terminal\n")
+        return 2
+    scratch = tempfile.mkdtemp(prefix="status-tutorial-")
+    cx_set_demo(True)
+    for name in ("XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"):
+        os.environ[name] = scratch
+    os.environ["HOME"] = scratch   # anything that still expands ~ lands in the scratch directory too
+    try:
+        collector = DemoGlobalCollector(os.path.join(scratch, "overrides.json"))
+        return _ap_interactive(collector, "tutorial", args.fps, 0.5, False, False, global_mode=True, tutorial=True,  # type: ignore[arg-type]
+                               ui=_ap_launch_ui("full"))
+    finally:
+        cx_set_demo(False)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _ap_parser().parse_args(argv)
@@ -22694,6 +23492,8 @@ def main(argv: list[str] | None = None) -> int:
     script_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
     if args.title_test:
         return _ap_title_test()
+    if args.tutorial:
+        return _ap_tutorial(args)
     global_mode = _ap_global_mode(args, script_dir)
     if args.json or args.execution:
         return _ap_json(args, script_dir)

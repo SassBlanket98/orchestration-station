@@ -276,7 +276,7 @@ class IdleSection(unittest.TestCase):
 
     def test_three_sections_in_order_with_the_headings_as_stops(self) -> None:
         self.assertEqual(global_rows(self.gs, UIState()), self.all_rows)
-        text = "\n".join(plain_lines(self.gs, UIState()))
+        text = "\n".join(plain_lines(self.gs, UIState(), 140))
         self.assertIn("idle · 1 projects", text)
         self.assertIn("finished 1", text)
         self.assertIn("h hide", text)
@@ -315,7 +315,7 @@ class IdleSection(unittest.TestCase):
         self.assertTrue(ui.ghide_closed)
         self.assertFalse(ui.ghide_idle)
         self.assertEqual(global_rows(self.gs, ui), self.all_rows[:5])
-        text = "\n".join(plain_lines(self.gs, ui))
+        text = "\n".join(plain_lines(self.gs, ui, 140))
         self.assertIn("closed hidden · H shows", text)
         self.assertNotIn("gamma", text)
         self.assertIn("beta", text)
@@ -373,7 +373,7 @@ class IdleSection(unittest.TestCase):
         self.assertIn("session unknown", text)
 
     def test_the_key_line_and_help_name_the_h_and_H_keys(self) -> None:
-        text = "\n".join(plain_lines(self.gs, UIState()))
+        text = "\n".join(plain_lines(self.gs, UIState(), 140))
         self.assertIn("[h] hide idle", text)
         self.assertIn("[H] hide closed", text)
         ui = UIState(help=True)
@@ -392,7 +392,7 @@ class IdleSection(unittest.TestCase):
         render_global(self.gs, ui, 120, 38, NOW)
         hit = next(h for h in ui.hits if h[4] == "key" and h[5] == "h")
         self.assertEqual(app._ap_pointer_keys(ui, f"click:{hit[2]}:{hit[0]}", self.gs, None, 0.0), ["h"])
-        self.assertIn("[H] hide closed", "\n".join(plain_lines(self.gs, ui)))
+        self.assertIn("[H] hide closed", "\n".join(plain_lines(self.gs, ui, 140)))
 
 
 class IdleStartsFolded(unittest.TestCase):

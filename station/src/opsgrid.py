@@ -27,6 +27,7 @@ from widgets import (
     _wd_C_VIOLET,
     _wd_clean,
     _wd_clip,
+    _wd_ctx_color,
     _wd_family_color,
     _wd_fmt_dur,
     _wd_fmt_money,
@@ -82,6 +83,7 @@ class _og_Cells:
     harn: str = ""
     model: str = ""
     ctx_pct: int | None = None
+    ctx_tokens: int | None = None     # the context size itself; the CTX cell shows it, coloured by ctx_pct
     ctx_has_data: bool = False        # raw ctx exists even when window is missing (cell still draws `—`)
     tokens: int | None = None
     cost: float | None = None
@@ -175,7 +177,7 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     local = _og_local(wk.family, wk.account, log.harness, wk.model, log.model)
     return _og_Cells(
         tag=wk.level_tag or "WORKER", harn=_og_worker_harness(wk), model=model, ctx_pct=ctx,
-        ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
+        ctx_tokens=log.ctx_tokens, ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
         tokens=tokens, cost=log.cost, cost_note="local" if local else "", elapsed=_og_worker_elapsed(wk, now),
         tools=tools, pulses=list(log.tool_pulses), now=step.text if step else "",
         now_age=max(0.0, now - log.last_ts) if step and log.last_ts else None, live=live,
@@ -196,7 +198,8 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     stamp, text = stage.doing[-1] if live and stage.doing else (0.0, "")
     local = _og_local(stage.tag, stage.lead_kind, stage.vitals.provider if stage.vitals else "", model, name)
     return _og_Cells(
-        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
+        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx,
+        ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
         tokens=stage.lead_tokens, cost=stage.lead_cost,
         cost_note="local" if local else "", elapsed=_og_stage_elapsed(stage, now),
         tools=stage.lead_tools, pulses=pulse, now=text, now_age=max(0.0, now - stamp) if stamp else None, live=live,
@@ -211,7 +214,7 @@ def _og_cell_values(plan: _og_Plan, cells: _og_Cells, now: float) -> dict[str, s
         "harn": _wd_c(_og_rpad(cells.harn or "—", 5), harn_color if cells.harn else _wd_C_FAINT),
         "model": _wd_c(_og_rpad(_wd_trunc(cells.model or "—", plan.model_w), plan.model_w),
                        _wd_C_MUTED if cells.model else _wd_C_FAINT),
-        "ctx": _og_ctx_cell(cells.ctx_pct),
+        "ctx": _og_ctx_cell(cells.ctx_tokens, cells.ctx_pct),
     }
     out["tokens"] = _og_money_or_count(_wd_fmt_tok(cells.tokens) if cells.tokens is not None else "—", 6,
                                        cells.tokens is not None, _wd_C_MUTED)
@@ -423,11 +426,19 @@ def _og_harn_color(harn: str) -> tuple[int, int, int]:
     return _wd_C_MUTED
 
 
-def _og_ctx_cell(pct: int | None) -> str:
-    if pct is None:
+def _og_ctx_cell(tokens: int | None, pct: int | None) -> str:
+    """The context size (`84k`), shaded by how full the window is; plain when the window is unknown."""
+    if tokens is None:
         return _og_metric("—", 4, _wd_C_FAINT, right=True)
-    color = _wd_C_RED if pct >= 90 else _wd_C_AMBER if pct >= 70 else _wd_C_SUB
-    return _og_metric(f"{pct}%", 4, color, right=True)
+    return _og_metric(_wd_fmt_tok(tokens), 4, _wd_ctx_color(pct), right=True)
+
+
+def _og_ctx_text(cells: object) -> str:
+    """`82k · 41%` for the detail views; `82k` without a window, empty when unknown."""
+    tokens, pct = getattr(cells, "ctx_tokens", None), getattr(cells, "ctx_pct", None)
+    if tokens is None:
+        return "" if pct is None else f"{pct}%"
+    return _wd_fmt_tok(tokens) + ("" if pct is None else f" · {pct}%")
 
 
 def _og_worker_elapsed(wk: Worker, now: float) -> str:

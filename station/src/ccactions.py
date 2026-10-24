@@ -36,7 +36,19 @@ _CX_READ_ERRORS = (OSError, ValueError, TypeError, KeyError, subprocess.Subproce
 _CX_RESUME = re.compile(r"(codex resume|claude --resume) ([A-Za-z0-9][A-Za-z0-9._:-]{0,127})")
 _CX_STOPS: dict[int, float] = {}   # pid -> time a stop was sent to it in this process
 _CX_LAUNCHED: list[subprocess.Popen] = []   # launches are never waited on; old ones are polled so they do not pile up
+_CX_DEMO = False   # the tutorial: every action reports what it would do and does nothing (see cx_set_demo)
 _cac_PIDFD = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")   # Linux 5.3+; tests flip it
+
+
+def cx_set_demo(on: bool) -> None:
+    """Tutorial mode. can() skips the /proc checks (the demo rows carry made-up pids), run() and spawn() send no signal,
+    start no process and write no log, and spawn_choices() returns a fixed list. Nothing outside this module sets it."""
+    global _CX_DEMO
+    _CX_DEMO = bool(on)
+
+
+def cx_is_demo() -> bool:
+    return _CX_DEMO
 
 
 @dataclass
@@ -211,7 +223,7 @@ def can(action: str, target: Target, *, now: float | None = None,
     if action not in ACTIONS:
         return False, "unknown action"
     if action == "spawn":
-        if target.cwd and os.path.isdir(target.cwd):
+        if _CX_DEMO or (target.cwd and os.path.isdir(target.cwd)):
             return True, ""
         return False, "no such directory"
     if action == "resume":
@@ -223,6 +235,19 @@ def can(action: str, target: Target, *, now: float | None = None,
             return False, "session is running"
         return True, ""
     pid = target.pid
+    if _CX_DEMO:   # same rules as below on the made-up row, without touching /proc
+        if not pid:
+            return False, "no pid"
+        if not target.live:
+            return False, "not running"
+        if action == "kill":
+            stopped = _CX_STOPS.get(pid)
+            if stopped is None:
+                return False, "send stop first"
+            waited = (time.time() if now is None else now) - stopped
+            if waited < _CX_STOP_GRACE_S:
+                return False, f"stop was {waited:.0f}s ago, wait {_CX_STOP_GRACE_S:.0f}s"
+        return True, ""
     if not pid:
         return False, "no pid"
     if not target.live:
@@ -359,6 +384,12 @@ def run(action: str, target: Target, now: float | None = None, *, kill: Callable
     for the pid right before signalling. Appends to the actions log whatever the outcome."""
     ts = time.time() if now is None else now
     ok, why = can(action, target, now=ts)
+    if _CX_DEMO:
+        if not ok:
+            return f"refused: {why}"
+        if action == "stop" and target.pid:
+            _CX_STOPS[target.pid] = ts
+        return f"demo: {action} of {target.label} not sent. A real {action} would have run."
     if not ok:
         return _cac_result(action, target, f"refused: {why}", ts)
     if action == "spawn":
@@ -463,6 +494,9 @@ def spawn_choices(runner: Callable[[list[str]], str] | None = None, *, guards_pa
                   models_path: str | None = None) -> list[Choice]:
     """The spawn picker: every id in $STATION_HOME/picker/guards.json allowedModels, ok=False with a reason for models under
     5% headroom or never-jobs, using `quota pick`/`quota status` output (runner replaces the subprocess)."""
+    if _CX_DEMO:
+        return [Choice("luna", "luna (medium)", True), Choice("haiku", "haiku", True),
+                Choice("sonnet", "sonnet (medium)", False, "headroom 3%"), Choice("opus", "opus (medium)", True)]
     guards_path = guards_path or _CX_GUARDS
     models_path = models_path or _CX_MODELS
     if not os.path.isfile(os.path.expanduser(guards_path)) or not os.path.isfile(os.path.expanduser(models_path)):
@@ -535,6 +569,8 @@ def spawn(model_id: str, project_dir: str, task_text: str, now: float | None = N
           models_path: str | None = None) -> str:
     """Start a new worker/session through dispatch / launch-session with the chosen model; refuses ids that are not ok."""
     ts = time.time() if now is None else now
+    if _CX_DEMO:
+        return f"demo: spawn of {model_id} not started. A real spawn would have launched it."
     project_dir = os.path.abspath(os.path.expanduser(project_dir or "."))
 
     def refuse(why: str, cli: str = "", name: str = "") -> str:

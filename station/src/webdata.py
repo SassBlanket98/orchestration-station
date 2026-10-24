@@ -30,8 +30,8 @@ from model import (
     GlobalSnapshot,
     LeadInfo,
     LogState,
-    OpenRouterSnapshot,
     Snapshot,
+    SpendSnapshot,
     Stage,
     Turn,
     Vitals,
@@ -190,10 +190,8 @@ def _identity_dict(item) -> dict:
     return out
 
 
-def _openrouter_dict(snap: OpenRouterSnapshot | None, *, ok: bool) -> dict | None:
-    if not ok or snap is None:
-        return None
-    return {
+def _spend_entry_dict(snap: SpendSnapshot) -> dict:
+    out = {
         "balance": snap.balance,
         "floorUsd": snap.floor_usd,
         "burnPerDayUsd": snap.burn_per_day,
@@ -213,6 +211,23 @@ def _openrouter_dict(snap: OpenRouterSnapshot | None, *, ok: bool) -> dict | Non
             for row in snap.per_model
         ],
     }
+    if snap.month_to_date_usd is not None:
+        out["monthToDateUsd"] = snap.month_to_date_usd
+    if snap.budget_limit_usd is not None or snap.budget_used_pct is not None:
+        out["budget"] = {"limitUsd": snap.budget_limit_usd, "usedPct": snap.budget_used_pct}
+    if snap.source is not None:
+        out["source"] = snap.source
+    return out
+
+
+def _openrouter_dict(snap: SpendSnapshot | None, *, ok: bool) -> dict | None:
+    if not ok or snap is None:
+        return None
+    return _spend_entry_dict(snap)
+
+
+def _spend_dict(spend: dict[str, SpendSnapshot], spend_ok: dict[str, bool]) -> dict[str, dict]:
+    return {pid: _spend_entry_dict(snap) for pid, snap in spend.items() if spend_ok.get(pid)}
 
 
 def _counts(workers: list[Worker]) -> dict:
@@ -417,6 +432,7 @@ def global_payload(gs: GlobalSnapshot, *, title: str = "all orchestrators",
         "cost_total": gs.cost_total, "hidden_idle": gs.hidden_idle,
         "dismissed": gs.dismissed, "errors": list(gs.errors),
         "openrouter": _openrouter_dict(gs.openrouter, ok=gs.openrouter_ok),
+        "spend": _spend_dict(gs.spend, gs.spend_ok),
         "stages": [_summary_stage(stage, gs.now) for stage in gs.stages],
     }
 

@@ -1,5 +1,6 @@
 import unittest
 
+import widgets
 from model import LogState, Stage, Step, Worker, WorkState
 from opsgrid import (
     _og_badge,
@@ -82,9 +83,10 @@ class OpsGridTests(unittest.TestCase):
     def test_context_threshold_colors(self):
         for pct, role in ((69, "SUB"), (70, "AMBER"), (89, "AMBER"), (90, "RED")):
             with self.subTest(pct=pct):
-                cells = _og_stage_cells(Stage(path="/x", label="x", lead_ctx=pct, lead_ctx_window=100), 100)
+                cells = _og_stage_cells(Stage(path="/x", label="x", lead_ctx=pct * 1000, lead_ctx_window=100_000), 100)
                 row = _og_row(_og_plan(120), "├─ ", "│  ", "◆", "x", cells, 100)[0]
-                self.assertIn(f"{pct}%", plain(row))
+                self.assertIn(f"{pct}k", plain(row))
+                self.assertIn("38;2;{};{};{}".format(*widgets._wd_ctx_color(pct)), row)
 
     def test_token_and_cost_formatting(self):
         wk = Worker("w", "done", log=LogState(tokens_in=812_000, tokens_out=388_000, cost=0.71))

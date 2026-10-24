@@ -172,7 +172,7 @@ def _cxk_dispatch(ui: UIState, key: str, gs: GlobalSnapshot, rows: int, sel: tup
     r resume, y/n/esc on ui.cc_confirm, the spawn picker's up/down/enter/esc, pgup/pgdn/wheel scroll of the focused part.
     Every action goes through ccactions.can / confirm_text / run and shows its result in ui.note. `sel` is the selected tree row."""
     global _CXK_PENDING
-    if not ui.allow_actions:
+    if not ui.actions_on():
         if ui.cc_spawn:
             spawn_cancel(ui)
             ui.cc_confirm = None

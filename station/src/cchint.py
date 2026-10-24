@@ -14,7 +14,7 @@ from widgets import (
 )
 
 HINT = (
-    "d details · Tab focus · ←→ pane tabs · 1-6 pane tab · "
+    "w station · d details · Tab focus · ←→ pane tabs · 1-6 pane tab · "
     "[ ] strip tab · E strip · v classic · ? keys"
 )
 _CX_ACTION_HINT = "s stop · n spawn · r resume · K kill"
@@ -65,4 +65,4 @@ def hint_line(ui: UIState, width: int) -> str:
         return _cx_line(ui.note, width, _wd_C_TEXT)
     if ui.cc_spawn:
         return _cx_line(_CX_SPAWN, width, _wd_C_TEXT)
-    return _wd_fit(_wd_c(_cx_hint(width, ui.allow_actions), _wd_C_DIM), width)
+    return _wd_fit(_wd_c(_cx_hint(width, ui.actions_on()), _wd_C_DIM), width)

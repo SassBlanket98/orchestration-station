@@ -38,6 +38,7 @@ from widgets import (
     _wd_C_SUB,
     _wd_C_TEXT,
     _wd_clean,
+    _wd_ctx_color,
     _wd_fit,
     _wd_fmt_mem,
     _wd_fmt_money,
@@ -284,8 +285,8 @@ def _cpn_ctx_body(row: _cpn_Row, cols: int) -> str:
     if row.ctx is None and row.ctx_window is None:
         return _cpn_unknown()
     if row.ctx_window:
-        used = f"{pct}%" if pct is not None else "—"
-        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_C_TEXT)
+        used = _wd_fmt_tok(row.ctx) if row.ctx is not None else "—"
+        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_ctx_color(pct))
         if pct is not None:
             width = min(14, max(4, cols - 34))
             body += " " + _wd_gauge_bar(pct / 100, width, _wd_pct_color(pct))

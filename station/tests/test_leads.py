@@ -563,6 +563,12 @@ class Stations(unittest.TestCase):
         self.add_lead(10, ["claude"], self.project())
         self.assertEqual(self.station(self.snap()).lead_state, "live")
 
+    def test_dismissing_an_execution_row_keys_it_by_its_own_path(self) -> None:
+        row = collect.Stage(path="execution:abc", dir=self.project(), label="x", lead_state="gone")
+        self.gc._co_last_stages = [row]
+        self.assertTrue(self.gc.dismiss(row.path, NOW - 10))
+        self.assertEqual(collect.load_dismissed(self.dismissed), {"execution:abc": NOW - 10})
+
     def test_dismiss_writes_the_file_read_back_by_the_collector(self) -> None:
         self.snap()
         self.assertTrue(self.gc.dismiss(self.stage, NOW - 10))

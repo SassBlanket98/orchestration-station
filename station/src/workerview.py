@@ -13,7 +13,7 @@ from model import (
     UIState,
     Worker,
 )
-from opsgrid import _og_worker_cells
+from opsgrid import _og_ctx_text, _og_worker_cells
 from opsspark import (
     _OS_STEP_HEAD_W,
     _OS_WHY_LABEL,
@@ -37,6 +37,7 @@ from widgets import (
     _wd_C_SUB,
     _wd_C_TEXT,
     _wd_clean,
+    _wd_ctx_color,
     _wd_family_color,
     _wd_fit,
     _wd_fmt_clock,
@@ -133,7 +134,7 @@ def _wv_metrics(wk: Worker, cells: object, cols: int) -> list[str]:
         _wv_field("ELAPSED", _wv_val(cells.elapsed, _wd_C_TEXT)),
         _wv_field("TOOLS", _wv_val("" if tools is None else str(tools), _wd_C_TEXT)),
         _wv_field("TOKENS", _wv_val("" if tokens is None else _wd_fmt_tok(tokens), _wd_C_TEXT)),
-        _wv_field("CTX", _wv_val("" if ctx is None else f"{ctx}%", _wd_C_SUB)),
+        _wv_field("CTX", _wv_val(_og_ctx_text(cells), _wd_ctx_color(ctx))),
         _wv_field("COST", cost),
         _wv_field("FLAGS", _wd_c(flags, _wd_C_AMBER) if flags else _wd_c("none", _wd_C_FAINT)),
     ]

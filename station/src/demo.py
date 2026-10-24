@@ -25,6 +25,7 @@ from model import (
     STALLED,
     TOOL_CATS,
     Finding,
+    GlobalSnapshot,
     LeadInfo,
     LogState,
     Milestone,
@@ -529,3 +530,93 @@ class DemoCollector:
 
     def close(self) -> None:
         pass
+
+
+# --- global demo (the tutorial): three session rows, all fake ---------------------------------------------------
+# The pids are made up and the rows only work with ccactions.cx_set_demo(True), which the tutorial sets: then stop, kill,
+# resume and spawn show their real prompts and report what they would have done. Overrides go to a scratch file the caller
+# names, never to $STATION_HOME.
+_dm_GLOBAL_ROWS = (
+    # (session id, label, session name, tag, harness, model, kind, state, started offset, phase, stream, lead pid, resume command)
+    ("demo-lead", _dm_TITLE, "ship the api", "CC·P", "claude", "sonnet-5.5", "claude", "active", -1500.0, "build", "api-routes", 48100, ""),
+    (None, _dm_SOLO_LABEL, "side tools", "CC·P", "claude", "haiku-5.5", "claude", "active", _dm_SOLO_SINCE, "build", "side-tools", 48902, ""),
+    ("demo-docs", "docs-site", "docs pass", "CDX", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
+    ("demo-old", "old-spike", "old spike", "CC·P", "claude", "opus-5.5", "claude", "closed", -20000.0, "build", "spike", None, "claude --resume demo-old"),
+)
+
+
+class DemoGlobalCollector:
+    """GlobalCollector stand-in with fixed fake sessions. The demo project's workers come from DemoCollector."""
+
+    def __init__(self, overrides_path: str) -> None:
+        self._demo = DemoCollector("")
+        self._co_overrides_path = overrides_path
+        self._pins: dict[str, str] = {}
+
+    def snapshot(self, now: float | None = None, all_history: bool = False, quick: bool = False) -> GlobalSnapshot:
+        t = time.time() if now is None else now
+        t0 = self._demo._t0
+        stages: list[Stage] = []
+        for sid, label, name, tag, harness, model, kind, state, since, phase, stream, lead_pid, resume in _dm_GLOBAL_ROWS:
+            path = f"/demo/{label}/.stage" + (f"#{sid}" if sid else "")
+            snap = self._demo.snapshot(now=t, all_history=all_history) if sid == "demo-lead" else Snapshot(title=label, now=t)
+            live = sum(w.state in LIVE_STATES for w in snap.workers)
+            state = self._pins.get(path, state)
+            gone = state == "closed"
+            quiet = state != "active"
+            stages.append(Stage(
+                path=path, label=label, snap=snap, live=live, last_activity=t - (5400.0 if quiet else 30.0) - (1100.0 if gone else 0.0),
+                lead=LeadInfo(model=model, phase=phase, stream=stream),
+                lead_state="gone" if gone else "live", lead_pid=None if gone else lead_pid, lead_since=0.0 if gone else t0 + since,
+                lead_kind="" if gone else kind, solo=not snap.workers and not gone, resume_cmd=resume,
+                dir=path, session_id=sid or "demo-solo", session_name=name, tag=tag, state=state,
+                activity=t - (5400.0 if quiet else 30.0) - (1100.0 if gone else 0.0), cwd=f"/demo/{label}",
+                lead_model=model, harness=harness,
+            ))
+        return GlobalSnapshot(now=t, all_history=all_history, stages=stages, quota=_dm_quota(t - t0), quota_ok=True)
+
+    def collector_for(self, stage_path: str) -> DemoCollector | None:
+        return self._demo if "demo-project" in stage_path else None
+
+    def detail(self, stage_path: str, name: str, tab: str) -> list[str]:
+        return self._demo.detail(name, tab) if "demo-project" in stage_path else []
+
+    def toggle_idle(self, path: str) -> str:
+        current = self._pins.get(path)
+        nxt = {None: "idle", "idle": "active", "active": None}[current]
+        if nxt is None:
+            self._pins.pop(path, None)
+        else:
+            self._pins[path] = nxt
+        return nxt or ""
+
+    def dismiss(self, stage_path: str, now: float | None = None) -> bool:
+        return False
+
+    def current_lead(self, path: str) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
+def demo_page_lines(view: str, worker: str = "") -> list[str]:
+    """What the station view's lead and files pages show in the tutorial: fixed text in the shape the real pages have
+    (the real ones read lead.json, the stream file and git, none of which exist for the demo rows)."""
+    if view == "lead":
+        return ["kind   claude", "state  live", "pid    48100", "age    25m", "",
+                "lead.json", "  {", '    "model": "sonnet-5.5",', '    "phase": "build",', '    "stream": "api-routes"', "  }", "",
+                "stream  api-routes.md",
+                "  Goal: put every src/api route behind the shared auth middleware and keep the tests green.",
+                "  Workers: api-routes (routes), db-schema (migration), ui-cards (usage cards).",
+                "", "quota picks (PROGRESS.md)",
+                "  22:40 pick api-routes -> sonnet-work (medium), 62% headroom",
+                "  22:42 pick db-schema -> deepseek (high), 91% headroom"]
+    if view == "files":
+        who = worker or "the selected worker"
+        return [f"files changed by {who} (example data)", "",
+                " M src/api/routes.ts                  | 14 ++++++++-----",
+                " M src/api/middleware/auth.ts         |  9 +++++--",
+                " A src/db/migrations/0042_plan_id.sql | 18 ++++++++++",
+                " 3 files changed, 28 insertions(+), 13 deletions(-)"]
+    return []

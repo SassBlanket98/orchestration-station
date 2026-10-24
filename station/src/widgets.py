@@ -61,6 +61,7 @@ def _wd_lerp_rgb(a: _wd_Rgb, b: _wd_Rgb, x: float) -> _wd_Rgb:
 
 _wd_SPARK_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_lerp_rgb(_wd_C_FAINT, _wd_C_BLUE, 0.55)), (0.5, _wd_C_BLUE), (1.0, _wd_C_CYAN)]
 _wd_QUOTA_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_GREEN), (70.0, _wd_C_AMBER), (95.0, _wd_C_RED)]
+_wd_CTX_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_SUB), (50.0, _wd_C_SUB), (75.0, _wd_C_AMBER), (92.0, _wd_C_RED)]
 
 _wd_RESET = "\x1b[0m"
 _wd_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -93,6 +94,11 @@ def _wd_gradient(stops: Sequence[tuple[float, _wd_Rgb]], x: float) -> _wd_Rgb:
 
 def _wd_pct_color(pct: float) -> _wd_Rgb:
     return _wd_gradient(_wd_QUOTA_STOPS, pct)
+
+
+def _wd_ctx_color(pct: float | None) -> _wd_Rgb:
+    """Context fill: the normal text colour to half the window, easing through amber to red near the limit."""
+    return _wd_C_SUB if pct is None else _wd_gradient(_wd_CTX_STOPS, pct)
 
 
 def _wd_family_color(family: str) -> _wd_Rgb:

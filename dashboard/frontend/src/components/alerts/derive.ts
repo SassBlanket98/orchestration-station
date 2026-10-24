@@ -123,3 +123,13 @@ export function formatAlertTime(at: number | null): string {
   const date = new Date(at * 1000);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+
+/** Identity of one alert occurrence. A new timestamp makes a dismissed alert come back. */
+export function alertKey(item: AlertItem): string {
+  return `${item.id}@${item.at ?? "?"}`;
+}
+
+/** The alerts that were not cleared. */
+export function withoutDismissed(items: readonly AlertItem[], dismissed: ReadonlySet<string>): AlertItem[] {
+  return items.filter((item) => !dismissed.has(alertKey(item)));
+}

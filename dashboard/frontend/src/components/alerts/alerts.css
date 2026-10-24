@@ -1,10 +1,10 @@
 /* Attention dropdown under the bell. Soft shadow is on this menu only. */
-.shell-popover.alerts-menu { width: 308px; padding: 0; overflow: hidden; box-shadow: 0 16px 36px #0008; max-width: calc(100vw - 16px); }
-.alerts-head { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.shell-popover.alerts-menu { width: 308px; padding: 0; overflow: hidden; display: flex; flex-direction: column; max-height: 50vh; max-height: 50dvh; box-shadow: 0 16px 36px #0008; max-width: calc(100vw - 16px); }
+.alerts-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .alerts-head h3 { padding: 0; font-size: 13px; color: var(--text); }
 .alerts-count { margin-left: 4px; color: var(--bad); font: 700 12px var(--mono); }
 .alerts-order { margin-left: auto; color: var(--dim); font: 11px var(--mono); }
-.alerts-list { list-style: none; margin: 0; padding: 4px; }
+.alerts-list { list-style: none; margin: 0; padding: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .alerts-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 10px; border-radius: 6px; color: var(--muted); font-size: 12px; }
 .alerts-row:hover { background: var(--raised); color: var(--text); }
 .alerts-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -14,3 +14,10 @@
 .alerts-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alerts-time { margin-left: auto; padding-left: 8px; color: var(--dim); font: 11px var(--mono); white-space: nowrap; }
 .alerts-empty { padding: 18px 14px; color: var(--muted); font-size: 12px; }
+.alerts-clear { margin-left: 0; min-height: 32px; padding: 4px 12px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); font: 600 12px var(--mono); cursor: pointer; }
+.alerts-clear:hover { background: var(--accent); color: var(--bg); }
+.alerts-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.alerts-item { display: flex; align-items: center; }
+.alerts-item .alerts-row { flex: 1; min-width: 0; }
+.alerts-x { flex: none; width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font-size: 16px; cursor: pointer; }
+.alerts-x:hover { background: var(--raised); color: var(--text); }

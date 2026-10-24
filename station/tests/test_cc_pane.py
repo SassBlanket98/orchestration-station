@@ -186,14 +186,14 @@ class PaneLinesTests(unittest.TestCase):
     def test_overview_worker_fields(self) -> None:
         text = "\n".join(_plain(line) for line in pane_lines(_lead(), _worker(), "Overview", 80, 20, 0, NOW))
         for part in ("c1-codexread", "WORKER", "Codex", "luna@medium", "parse rollouts",
-                     "CTX", "22%", "272k", "$0.12", "CPU", "RSS", "read 20", "FLAGS"):
+                     "CTX", "60k of 272k", "$0.12", "CPU", "RSS", "read 20", "FLAGS"):
             self.assertIn(part, text)
         self.assertNotIn("RESULT", text)   # still running
 
     def test_overview_lead_fields(self) -> None:
         text = "\n".join(_plain(line) for line in pane_lines(_lead(), None, "Overview", 80, 20, 0, NOW))
         for part in ("sample-project", "LEAD", "CC·W", "Opus 5.5@hi", "build the control center",
-                     "812k", "41%", "of 200k", "$2.10", "read 1"):
+                     "812k", "82k", "of 200k", "$2.10", "read 1"):
             self.assertIn(part, text)
 
     def test_finished_worker_shows_result_and_failure(self) -> None:

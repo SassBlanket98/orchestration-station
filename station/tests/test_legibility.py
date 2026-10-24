@@ -204,7 +204,7 @@ class ContextColumn(EnvPatch):
         gs = self.gs(229_000)
         gs.stages[0].lead_ctx_window = 250_000
         row = self.cell(render_global(gs, UIState(), 120, 38, NOW))
-        self.assertIn("92%", row)                                # the CTX column is a percentage now
+        self.assertIn("229k", row)                               # the CTX column is the token count, shaded by fill
         self.assertNotIn("1 live", row)
 
     def test_ctx_is_not_repeated_on_the_milestone_line(self) -> None:
@@ -213,16 +213,29 @@ class ContextColumn(EnvPatch):
         st.lead_ctx_window = 250_000
         st.snap.milestones = [Milestone(NOW - 30, "working")]
         out = "\n".join(plain(render_global(GlobalSnapshot(now=NOW, stages=[st]), UIState(gopen={(st.path, "stage", "")}), 120, 38, NOW)))
-        self.assertEqual(out.count("92%"), 1)
+        self.assertEqual(out.count("229k"), 1)
 
-    def test_ctx_colour_by_percentage_normal_then_amber_then_red(self) -> None:
-        normal, amber, red = rgb(widgets._wd_C_SUB), rgb(widgets._wd_C_AMBER), rgb(widgets._wd_C_RED)
-        for tokens, window, colour, text in ((69_000, 100_000, normal, "69%"), (70_000, 100_000, amber, "70%"),
-                                             (89_000, 100_000, amber, "89%"), (90_000, 100_000, red, "90%")):
+    def test_ctx_colour_eases_from_normal_through_amber_to_red(self) -> None:
+        normal, amber, red = widgets._wd_C_SUB, widgets._wd_C_AMBER, widgets._wd_C_RED
+        self.assertEqual(widgets._wd_ctx_color(None), normal)
+        self.assertEqual(widgets._wd_ctx_color(40), normal)
+        self.assertEqual(widgets._wd_ctx_color(75), amber)
+        self.assertEqual(widgets._wd_ctx_color(92), red)
+        self.assertEqual(widgets._wd_ctx_color(100), red)
+        self.assertNotIn(widgets._wd_ctx_color(62), (normal, amber))     # the ramp is gradual, not stepped
+        self.assertNotIn(widgets._wd_ctx_color(84), (amber, red))
+
+    def test_ctx_cell_is_painted_with_the_ramp_colour(self) -> None:
+        for tokens, window, text in ((40_000, 100_000, "40k"), (75_000, 100_000, "75k"), (95_000, 100_000, "95k")):
             gs = self.gs(tokens)
             gs.stages[0].lead_ctx_window = window
             raw = next(ln for ln in render_global(gs, UIState(), 120, 38, NOW) if text in _wd_SGR_RE.sub("", ln))
-            self.assertRegex(raw, rf"\x1b\[{colour}m\s*{text}")
+            self.assertRegex(raw, rf"\x1b\[{rgb(widgets._wd_ctx_color(tokens * 100 // window))}m\s*{text}")
+
+    def test_ctx_without_a_window_shows_tokens_in_the_normal_colour(self) -> None:
+        gs = self.gs(180_000)
+        raw = next(ln for ln in render_global(gs, UIState(), 120, 38, NOW) if "180k" in _wd_SGR_RE.sub("", ln))
+        self.assertRegex(raw, rf"\x1b\[{rgb(widgets._wd_C_SUB)}m\s*180k")
 
     def test_ctx_threshold_helper_keeps_its_env_overrides(self) -> None:
         from render import _rd_g_ctx_cell
@@ -252,7 +265,7 @@ class ContextColumn(EnvPatch):
         st = session(f"{HOME}/c", "gamma", [], state="closed", lead_state="gone", ctx=40_000, last=NOW - 3600)
         st.lead_ctx_window = 100_000
         out = "\n".join(plain(render_global(GlobalSnapshot(now=NOW, stages=[st]), UIState(gopen={("", "more", f"finished:{HOME}/c")}), 120, 38, NOW)))
-        self.assertIn("40%", out)
+        self.assertIn("40k", out)
 
     def test_ctx_column_survives_every_plan_width(self) -> None:
         for cols in (89, 90, 99, 100, 112, 150):

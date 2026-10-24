@@ -245,7 +245,7 @@ class GlobalRenderTests(unittest.TestCase):
         gs = GlobalSnapshot(now=NOW, stages=[Stage("/a", "alpha", snap, 1, NOW - 1, lead_ctx=46_000,
                                                    lead_ctx_window=100_000)])
         for cols in (110, 57):
-            self.assertIn("46%", "\n".join(plain(render_global(gs, UIState(), cols, 20, NOW))))
+            self.assertIn("46k", "\n".join(plain(render_global(gs, UIState(), cols, 20, NOW))))
 
     def test_quota_line_and_background_only_on_the_cursor_row(self) -> None:
         gs = sample()

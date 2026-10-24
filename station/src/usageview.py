@@ -7,13 +7,18 @@ from __future__ import annotations
 import os
 import time
 
-from model import OPENROUTER_ACCOUNT, OpenRouterSnapshot, QuotaAccount, QuotaWindow
+from model import (
+    OPENAI_ACCOUNT,
+    OPENROUTER_ACCOUNT,
+    SPEND_PROVIDER_ORDER,
+    QuotaAccount,
+    QuotaWindow,
+    SpendSnapshot,
+)
 from widgets import (
     _wd_bar,
     _wd_box,
     _wd_c,
-    _wd_levels,
-    _wd_SPARK,
     _wd_C_AMBER,
     _wd_C_BLUE,
     _wd_C_DIM,
@@ -23,10 +28,12 @@ from widgets import (
     _wd_C_SUB,
     _wd_C_TEXT,
     _wd_clean,
-    _wd_SGR_RE,
+    _wd_levels,
     _wd_lr,
     _wd_pad,
     _wd_pct_color,
+    _wd_SGR_RE,
+    _wd_SPARK,
     _wd_spark,
     _wd_thumb,
     _wd_trunc,
@@ -160,7 +167,7 @@ def _uv_rank(name: str) -> int:
     return 5
 
 
-def _uv_groups(accounts: list[QuotaAccount], or_shown: bool) -> tuple[list[QuotaAccount], list[QuotaAccount], list[str]]:
+def _uv_groups(accounts: list[QuotaAccount], spend_shown: set[str]) -> tuple[list[QuotaAccount], list[QuotaAccount], list[str]]:
     """(accounts with windows, credit accounts, names with nothing to show). Same-name duplicates collapse."""
     credit_names = {a.name for a in accounts if a.credit is not None}
     live: list[QuotaAccount] = []
@@ -169,8 +176,8 @@ def _uv_groups(accounts: list[QuotaAccount], or_shown: bool) -> tuple[list[Quota
     seen: set[str] = set()
     for a in accounts:
         if a.credit is not None:
-            if a.name == OPENROUTER_ACCOUNT and or_shown:
-                continue    # the OpenRouter block below carries it
+            if a.name in spend_shown:
+                continue    # a spend block below carries it
             credit.append(a)
             continue
         if a.windows and not a.stale:
@@ -196,10 +203,13 @@ def _uv_credit_text(a: QuotaAccount) -> tuple[str, bool]:
     return txt, c.low
 
 
-def _uv_openrouter(snap: OpenRouterSnapshot, iw: int) -> list[str]:
+def _uv_spend(snap: SpendSnapshot, iw: int) -> list[str]:
     head = ""
     if snap.balance is None:
-        head += _uv_c("no balance recorded", _wd_C_MUTED)
+        if snap.month_to_date_usd is not None:
+            head += _uv_c(f"${snap.month_to_date_usd:.2f} mtd", _wd_C_TEXT, bold=True)
+        else:
+            head += _uv_c("no balance recorded", _wd_C_MUTED)
     else:
         head += _uv_c(f"${snap.balance:.2f}", _wd_C_RED if snap.low else _wd_C_TEXT, bold=True)
         if snap.low and _uv_plain():
@@ -292,17 +302,30 @@ def _uv_two_up(blocks: list[list[str]], cw: int) -> list[str]:
     return out
 
 
-def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRouterSnapshot | None,
+def _uv_merge_spend(openrouter: SpendSnapshot | None, openrouter_ok: bool,
+                    spend: dict[str, SpendSnapshot] | None, spend_ok: dict[str, bool] | None) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
+    merged: dict[str, SpendSnapshot] = dict(spend or {})
+    ok: dict[str, bool] = dict(spend_ok or {})
+    if openrouter is not None:
+        merged.setdefault(OPENROUTER_ACCOUNT, openrouter)
+    if openrouter_ok:
+        ok[OPENROUTER_ACCOUNT] = True
+    return merged, ok
+
+
+def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnapshot | None,
                 openrouter_ok: bool, sel: int, iw: int, now: float,
                 history: dict[str, list[float]] | None = None, spark: bool = True, two_up: bool = False,
-                airy: bool = True) -> tuple[list[str], int, int]:
+                airy: bool = True, spend: dict[str, SpendSnapshot] | None = None,
+                spend_ok: dict[str, bool] | None = None) -> tuple[list[str], int, int]:
     """(body lines, 0, number of subscriptions). Every subscription is a block with all its windows; the
     concerns are separate labelled sections: subscriptions, API credits, OpenRouter, no live data."""
     if not quota_ok:
         return [_uv_c("quota unavailable (quota service not reachable)", _wd_C_DIM)], 0, 0
     history = history or {}
-    or_shown = openrouter_ok and openrouter is not None
-    live, credit, quiet = _uv_groups(quota, or_shown)
+    spend_map, spend_ok_map = _uv_merge_spend(openrouter, openrouter_ok, spend, spend_ok)
+    spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if spend_ok_map.get(pid) and spend_map.get(pid)}
+    live, credit, quiet = _uv_groups(quota, spend_shown)
     nw = max((_wd_width(_wd_clean(a.name)) for a in credit), default=6)
     cw = (iw - 3) // 2 if two_up else iw
     bw = min(max(cw - (4 + 12 + 1 + 4 + 3 + 15 + 18), 10), 44)
@@ -323,8 +346,12 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRoute
             lines.append("  " + _uv_c(_wd_pad(_wd_trunc(_wd_clean(a.name), nw), nw), _wd_C_TEXT, bold=True) + "   "
                          + (_uv_c(txt + " LOW", _wd_C_RED, bold=True) if low else _uv_c(txt, _wd_C_MUTED)))
         lines.append("")
-    if or_shown and openrouter is not None:
-        lines += [_uv_rule("OPENROUTER", "", iw)] + gap + ["  " + x for x in _uv_openrouter(openrouter, iw - 2)] + [""]
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = spend_map.get(pid)
+        if not spend_ok_map.get(pid) or snap is None:
+            continue
+        title = pid.upper() if pid != OPENAI_ACCOUNT else "OPENAI"
+        lines += [_uv_rule(title, "", iw)] + gap + ["  " + x for x in _uv_spend(snap, iw - 2)] + [""]
     if quiet:
         lines += [_uv_rule("NO LIVE DATA", "", iw)] + gap + ["  " + _uv_c(_wd_trunc("  ·  ".join(quiet), iw - 2), _wd_C_DIM)]
     while lines and not lines[-1]:
@@ -332,9 +359,11 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRoute
     return lines, 0, len(live)
 
 
-def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRouterSnapshot | None,
+def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnapshot | None,
                  openrouter_ok: bool, scroll: int, cols: int, rows: int, now: float,
-                 history: dict[str, list[float]] | None = None) -> list[str]:
+                 history: dict[str, list[float]] | None = None,
+                 spend: dict[str, SpendSnapshot] | None = None,
+                 spend_ok: dict[str, bool] | None = None) -> list[str]:
     """The boxed screen, `rows` tall; `scroll` is the first line shown when the content is still too tall."""
     iw, ih = cols - 4, rows - 2
     # Step down until it fits: airy, tight, two columns (wide only), no sparklines, no sparklines in two columns.
@@ -346,7 +375,8 @@ def usage_screen(quota: list[QuotaAccount], quota_ok: bool, openrouter: OpenRout
         steps.append((False, True, False))
     lines: list[str] = []
     for spark, two_up, airy in steps:
-        lines, _at, _n = usage_lines(quota, quota_ok, openrouter, openrouter_ok, 0, iw, now, history, spark, two_up, airy)
+        lines, _at, _n = usage_lines(quota, quota_ok, openrouter, openrouter_ok, 0, iw, now, history, spark, two_up, airy,
+                                     spend=spend, spend_ok=spend_ok)
         if len(lines) <= ih:
             break
     first = min(max(int(scroll), 0), max(0, len(lines) - ih))

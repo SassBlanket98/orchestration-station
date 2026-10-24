@@ -29,6 +29,7 @@ from model import (
     QUIET,
     QUIET_S,
     RUNNING,
+    SPEND_PROVIDER_ORDER,
     STALL_S,
     STALLED,
     TOOL_CATS,
@@ -37,13 +38,13 @@ from model import (
     Group,
     LogState,
     Milestone,
-    OpenRouterSnapshot,
     QuotaAccount,
     QuotaCredit,
     QuotaExtra,
     QuotaWindow,
     Review,
     Snapshot,
+    SpendSnapshot,
     Stage,
     Step,
     UIState,
@@ -73,6 +74,7 @@ from opsgrid import (
 from opsspark import _os_step_line, _os_why
 from opstree import _ot_prefixes
 from sessionview import SV_KEYS, _sv_page
+from tutorial import tut_overlay
 from usageview import usage_screen
 from widgets import (
     _wd_bar,
@@ -138,6 +140,9 @@ _rd_HELP = (
     ("", "FIND"),
     ("/", "search by text (Enter keeps it, Esc clears)"),
     ("1 2 3 4", "filter: all, working, lagging, problems; f cycles them"),
+    ("", "STATION VIEW"),
+    ("w", "open the station view of the row's session: live worker cards, timeline, reviews"),
+    ("L C F", "inside it: lead page, cost page, files page; t timeline, r reviews; Esc goes back"),
     ("", "DETAILS  (control center)"),
     ("d", "show or hide the details pane; Tab moves focus: list, pane, strip"),
     ("← →", "with the pane focused: its tabs. ↑↓ scroll it"),
@@ -644,7 +649,7 @@ def _rd_fold_line(title: str, count: int, cols: int, selected: bool) -> str:
 def _rd_help_overlay(lines: list[str], cols: int, rows: int, ui: UIState) -> list[str]:
     """The ? box, centred over the frame. Its rows replace the frame rows they cover."""
     help_rows = _rd_HELP
-    if not ui.allow_actions:
+    if not ui.actions_on():
         help_rows = tuple((k, v) for k, v in _rd_HELP if k not in ("s  K", "r  n", "x"))
         help_rows = tuple((k, "ACT  (needs --allow-actions)" if v.startswith("ACT  ") else v)
                           for k, v in help_rows)
@@ -1829,23 +1834,40 @@ def _rd_openrouter_worker(wk: Worker) -> bool:
     return raw.startswith(("openrouter/", "deepseek-or@")) or raw == "deepseek-or"
 
 
-def _rd_openrouter_chip(snap: OpenRouterSnapshot) -> tuple[str, bool, bool]:
+def _rd_spend_chip(snap: SpendSnapshot) -> tuple[str, bool, bool]:
     """(text without ANSI, alert colour, stale) for the masthead usage line."""
-    if snap.balance is None:
+    name = snap.provider or OPENROUTER_ACCOUNT
+    if snap.balance is not None:
+        txt = f"{name} ${snap.balance:.2f}"
+        if snap.runs_out_at:
+            txt += " · out " + time.strftime("%b %d", time.gmtime(snap.runs_out_at))
+        alert = snap.low or (snap.floor_usd is not None and snap.balance < snap.floor_usd)
+        return (txt, alert, snap.stale)
+    if snap.month_to_date_usd is not None:
+        return (f"{name} ${snap.month_to_date_usd:.2f} mtd", False, snap.stale)
+    if name == OPENROUTER_ACCOUNT:
         return (f"{OPENROUTER_ACCOUNT} –", False, snap.stale)
-    txt = f"{OPENROUTER_ACCOUNT} ${snap.balance:.2f}"
-    if snap.runs_out_at:
-        txt += " · out " + time.strftime("%b %d", time.gmtime(snap.runs_out_at))
-    alert = snap.low or (snap.floor_usd is not None and snap.balance < snap.floor_usd)
-    return (txt, alert, snap.stale)
+    return (f"{name} –", False, snap.stale)
 
 
-def _rd_openrouter_chip_paint(snap: OpenRouterSnapshot) -> str:
-    text, alert, stale = _rd_openrouter_chip(snap)
+def _rd_openrouter_chip(snap: SpendSnapshot) -> tuple[str, bool, bool]:
+    return _rd_spend_chip(snap)
+
+
+def _rd_spend_chip_paint(snap: SpendSnapshot) -> str:
+    text, alert, stale = _rd_spend_chip(snap)
     body = _wd_c(text, _wd_C_RED if alert else _wd_C_TEXT, bold=True)
     if stale:
         body += _rd_dim(" stale")
     return body
+
+
+def _rd_openrouter_chip_paint(snap: SpendSnapshot) -> str:
+    return _rd_spend_chip_paint(snap)
+
+
+def _rd_spend_masthead_chip(snap: SpendSnapshot) -> bool:
+    return snap.balance is not None or snap.month_to_date_usd is not None
 
 
 def _rd_credit_text(c: QuotaCredit) -> str:
@@ -2409,7 +2431,7 @@ def _rd_build(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, stage
             keys: tuple[tuple[str, str], ...] | list[tuple[str, str]] = _rd_DETAIL_KEYS
         elif view == "quota":
             body = usage_screen(snap.quota, snap.quota_ok, snap.openrouter, snap.openrouter_ok, ui.scroll,
-                                cols, rows - 2, t, snap.usage_history)
+                                cols, rows - 2, t, snap.usage_history, spend=snap.spend, spend_ok=snap.spend_ok)
             keys = _rd_QUOTA_KEYS
         elif view in _rd_PAGES:
             body = _rd_page_body(snap, ui, cols, rows - 2)
@@ -2448,6 +2470,7 @@ def render_frame(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, st
         lines = _rd_build(snap, ui, cols, rows, t, stage)
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
+        lines = tut_overlay(lines, ui, cols, rows)   # the station pages are drawn here, also in the tutorial
     except Exception:   # a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
@@ -2792,7 +2815,7 @@ _rd_G_UNLINKED = 20            # workers an unlinked ("session unknown") group l
 _rd_G_UNLINKED_MORE = "unlinked"   # the unlinked group's fold row name (the finished folds use "finished:<root>")
 _rd_G_SECTION_KEYS = {"idle": "h", "closed": "H"}   # the key that hides each headed section
 _rd_G_STEPS = 3                # recent log steps shown in an open worker
-_rd_G_KEYS = (("↑↓", "move"), ("Enter", "fold"), ("Space", "open"), ("/", "find"), ("1-4", "filter"),
+_rd_G_KEYS = (("↑↓", "move"), ("Enter", "fold"), ("Space", "open"), ("w", "station"), ("/", "find"), ("1-4", "filter"),
               ("h", "hide idle"), ("H", "hide closed"), ("e/c", "all"), ("a", "history"))
 
 
@@ -3734,10 +3757,14 @@ def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
                 + (" " + _wd_c("+$" + (f"{acct.extra.usd:.2f}" if acct.extra.usd is not None else "?"), _wd_C_RED)
                    if acct.extra is not None else ""))
         items.append((text, _rd_ttr(win.resets_at, now)))
-    if gs.openrouter_ok and gs.openrouter is not None and gs.openrouter.balance is not None:
-        items.append((_rd_openrouter_chip_paint(gs.openrouter), ""))
+    spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if gs.spend_ok.get(pid) and gs.spend.get(pid)}
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = gs.spend.get(pid)
+        if not gs.spend_ok.get(pid) or snap is None or not _rd_spend_masthead_chip(snap):
+            continue
+        items.append((_rd_spend_chip_paint(snap), ""))
     for acct in gs.quota:
-        if acct.name == OPENROUTER_ACCOUNT and gs.openrouter_ok and gs.openrouter is not None:
+        if acct.name in spend_shown:
             continue
         if acct.credit is not None and acct.credit.balance is not None:
             items.append((_rd_dim(_wd_clean(acct.name)) + " "
@@ -3784,17 +3811,17 @@ def _rd_g_chips(gs: GlobalSnapshot, ui: UIState, w: int, y: int) -> str:
     for i, width in enumerate(widths):
         _rd_hit(ui, y, y, x, x + width - 1, "key", str(i + 1))
         x += width + 1
-    or_label = "5 openrouter"
-    if ui.view == "openrouter":
-        or_chip = _wd_c("[", _wd_C_BLUE) + _wd_c(or_label, _wd_C_TEXT, bold=True) + _wd_c("]", _wd_C_BLUE)
+    usage_label = "5 usage"      # the usage screen: quota windows plus one section per spend provider
+    if ui.view == "quota":
+        usage_chip = _wd_c("[", _wd_C_BLUE) + _wd_c(usage_label, _wd_C_TEXT, bold=True) + _wd_c("]", _wd_C_BLUE)
     else:
-        or_chip = " " + _rd_dim("5 ") + _rd_muted("openrouter") + " "
-    or_w = len(or_chip) + 2
-    if x + or_w + 10 <= w:
-        _rd_hit(ui, y, y, x, x + or_w - 1, "key", "5")
-        parts.append(or_chip)
-        widths.append(or_w)
-        x += or_w + 1
+        usage_chip = " " + _rd_dim("5 ") + _rd_muted("usage") + " "
+    usage_w = len(usage_chip) + 2
+    if x + usage_w + 10 <= w:
+        _rd_hit(ui, y, y, x, x + usage_w - 1, "key", "5")
+        parts.append(usage_chip)
+        widths.append(usage_w)
+        x += usage_w + 1
     if ui.gedit:
         box = _wd_c("/ ", _wd_C_BLUE) + _wd_c(ui.gquery, _wd_C_TEXT) + _wd_c("▌", _wd_C_BLUE)
     elif ui.gquery:
@@ -4453,6 +4480,7 @@ def render_global(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: floa
             lines = _rd_close_box(lines, gs, ui, cols, rows)
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
+        lines = tut_overlay(lines, ui, cols, rows)
     except Exception:
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
@@ -4514,11 +4542,11 @@ def render_global_plain(gs: GlobalSnapshot, cols: int = 100, rows: int | None = 
     closed = [r for r in _rd_g_all_rows(gs) if r.section == "closed" and not _rd_g_closed_recent(gs, r)]
     if closed or gs.dismissed:
         output.append(_rd_g_closed_text(gs, closed))
-    if gs.openrouter_ok and gs.openrouter is not None:
-        chip, _, stale = _rd_openrouter_chip(gs.openrouter)
-        if stale:
-            chip += " stale"
-        output.append(chip)
+    for pid in SPEND_PROVIDER_ORDER:
+        snap = gs.spend.get(pid)
+        if gs.spend_ok.get(pid) and snap is not None:
+            chip, _, stale = _rd_spend_chip(snap)
+            output.append(chip + (" stale" if stale else ""))
     output.extend(f"collector error: {error}" for error in gs.errors)
     if output and not output[-1]:
         output.pop()

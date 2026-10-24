@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary, WorkerPreview } from "../../api/types";
 import { alertsMockFixture } from "../../mocks/alerts";
-import { ALERT_WINDOW_S, deriveAlerts, formatAlertTime, inAlertScope } from "./derive";
+import { ALERT_WINDOW_S, type AlertItem, alertKey, deriveAlerts, formatAlertTime, inAlertScope, withoutDismissed } from "./derive";
 
 const NOW = 1_800_000_000;
 const HOUR = 3600;
@@ -176,5 +176,24 @@ describe("mock fixture", () => {
     const items = alertsMockFixture(NOW);
     expect(items.map((item) => item.kind)).toEqual(["idle", "stdin_hang", "review", "exited"]);
     expect(items.at(-1)?.at).toBeNull();
+  });
+});
+
+describe("clearing alerts", () => {
+  const item = (id: string, at: number | null): AlertItem => ({ id, kind: "exited", sessionId: "s", text: id, at, href: "/runs/s" });
+
+  it("hides a cleared alert and keeps the others", () => {
+    const a = item("a", 10);
+    const b = item("b", 20);
+    expect(withoutDismissed([a, b], new Set([alertKey(a)]))).toEqual([b]);
+  });
+
+  it("brings an alert back when its timestamp changes", () => {
+    const cleared = new Set([alertKey(item("a", 10))]);
+    expect(withoutDismissed([item("a", 11)], cleared)).toHaveLength(1);
+  });
+
+  it("keys an alert without a timestamp", () => {
+    expect(alertKey(item("a", null))).toBe("a@?");
   });
 });

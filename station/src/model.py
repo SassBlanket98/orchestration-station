@@ -281,19 +281,21 @@ class QuotaAccount:
 
 
 OPENROUTER_ACCOUNT = "openrouter"
+OPENAI_ACCOUNT = "openai"
 OPENROUTER_BALANCE_STALE_S = 30 * 60   # balanceAt older than this -> stale chip
 OPENROUTER_MAX_ROWS = 400          # a runaway quota reply cannot swell every refresh and API response
+SPEND_PROVIDER_ORDER = (OPENROUTER_ACCOUNT, OPENAI_ACCOUNT)
 
 
 @dataclass
-class OpenRouterSpendDay:
+class SpendDay:
     date: str       # UTC YYYY-MM-DD
     usd: float
     requests: int
 
 
 @dataclass
-class OpenRouterSpendModel:
+class SpendModel:
     model: str
     usd: float
     requests: int
@@ -302,17 +304,27 @@ class OpenRouterSpendModel:
 
 
 @dataclass
-class OpenRouterSnapshot:
-    balance: float | None
-    floor_usd: float | None
-    burn_per_day: float | None
-    runs_out_at: float | None   # epoch seconds
-    balance_at: float | None    # epoch seconds of the last balance reading
-    low: bool
-    stale: bool
-    since: str                  # spend window start (UTC day)
-    per_day: list[OpenRouterSpendDay]
-    per_model: list[OpenRouterSpendModel]
+class SpendSnapshot:
+    provider: str = OPENROUTER_ACCOUNT
+    balance: float | None = None
+    floor_usd: float | None = None
+    burn_per_day: float | None = None
+    runs_out_at: float | None = None   # epoch seconds
+    balance_at: float | None = None    # epoch seconds of the last balance reading
+    low: bool = False
+    stale: bool = False
+    since: str = ""                  # spend window start (UTC day)
+    per_day: list[SpendDay] = field(default_factory=list)
+    per_model: list[SpendModel] = field(default_factory=list)
+    month_to_date_usd: float | None = None
+    budget_limit_usd: float | None = None
+    budget_used_pct: float | None = None
+    source: str | None = None
+
+
+OpenRouterSpendDay = SpendDay
+OpenRouterSpendModel = SpendModel
+OpenRouterSnapshot = SpendSnapshot
 
 
 @dataclass
@@ -327,13 +339,29 @@ class Snapshot:
     milestones: list[Milestone] = field(default_factory=list)  # oldest first
     quota: list[QuotaAccount] = field(default_factory=list)
     quota_ok: bool = False               # False -> hide the quota panel
-    openrouter: OpenRouterSnapshot | None = None      # the usage screen (global view only)
+    spend: dict[str, SpendSnapshot] = field(default_factory=dict)
+    spend_ok: dict[str, bool] = field(default_factory=dict)
+    openrouter: SpendSnapshot | None = None      # the usage screen (global view only); mirrors spend["openrouter"]
     openrouter_ok: bool = False
     usage_history: dict[str, list[float]] = field(default_factory=dict)   # account -> 24h of % used, oldest first
     tokens_total: int | None = None
     cost_total: float | None = None
     services: list[tuple[str, bool]] = field(default_factory=list)  # non-agent pid files: (name, up)
     groups: list[Group] = field(default_factory=list)     # newest first; the current group is flagged
+
+    def __post_init__(self) -> None:
+        _sync_spend_fields(self)
+
+
+def _sync_spend_fields(snap: Snapshot | GlobalSnapshot) -> None:
+    if snap.openrouter is not None:
+        snap.spend.setdefault(OPENROUTER_ACCOUNT, snap.openrouter)
+    elif OPENROUTER_ACCOUNT in snap.spend:
+        snap.openrouter = snap.spend[OPENROUTER_ACCOUNT]
+    if snap.openrouter_ok:
+        snap.spend_ok[OPENROUTER_ACCOUNT] = True
+    elif snap.spend_ok.get(OPENROUTER_ACCOUNT):
+        snap.openrouter_ok = True
 
 
 SCAN_DEPTH = 4           # global view: directory levels searched under each root for a stage dir
@@ -495,11 +523,16 @@ class GlobalSnapshot:
     errors: list[str] = field(default_factory=list)  # collector or parse failures, shown instead of an empty tree
     quota: list[QuotaAccount] = field(default_factory=list)
     quota_ok: bool = False
-    openrouter: OpenRouterSnapshot | None = None
+    spend: dict[str, SpendSnapshot] = field(default_factory=dict)
+    spend_ok: dict[str, bool] = field(default_factory=dict)
+    openrouter: SpendSnapshot | None = None
     openrouter_ok: bool = False          # False -> treat openrouter block as absent
     usage_history: dict[str, list[float]] = field(default_factory=dict)   # account -> 24h of % used, oldest first
     tokens_total: int | None = None      # summed over the stages shown
     cost_total: float | None = None
+
+    def __post_init__(self) -> None:
+        _sync_spend_fields(self)
 
 
 @dataclass
@@ -547,6 +580,16 @@ class UIState:
     group_open: set[str] = field(default_factory=set)  # Group.key of earlier groups unfolded in the station view
     pinned: set[str] = field(default_factory=set)     # finished workers the user opened; kept open if they run again
     help: bool = False                   # ? overlay open
+    tut: int = -1                        # tutorial step index (tutorial.STEPS); -1 = not running
+    tut_base: tuple = ()                 # UI state taken when the tutorial step began (see tutorial._tu_snapshot)
+    tut_seen: set[str] = field(default_factory=set)   # what the current tutorial step has seen you do (tabs visited, keys pressed)
+    tut_ok: bool = False                 # the current tutorial step's goal is met; only then does next work
+    demo: bool = False                   # demo data (tutorial): ccactions is in demo mode, so actions report and do nothing
+
+    def actions_on(self) -> bool:
+        """Process actions are allowed with --allow-actions, or in the tutorial where they only report."""
+        return self.allow_actions or self.demo
+
     # global view: close actions
     close_ask: tuple[str, int] | None = None   # (station path, lead pid) waiting on the y/n confirm box
     closing: set[str] = field(default_factory=set)  # stations whose lead got SIGTERM; dismissed once it is gone

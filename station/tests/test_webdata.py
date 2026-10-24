@@ -465,8 +465,8 @@ class ReadableModelPayloadTests(unittest.TestCase):
 NOW = 1_800_000_000.0
 
 # key sets as they were before the ops fields (frozen from the pre-change payload)
-BEFORE_ENVELOPE = {"cost_total", "dismissed", "errors", "generated", "hidden_idle", "mode", "now", "openrouter", "poll_ms", "stages", "title", "tokens_total", "v"}
-BEFORE_SINGLE_ENVELOPE = BEFORE_ENVELOPE - {"openrouter"}
+BEFORE_ENVELOPE = {"cost_total", "dismissed", "errors", "generated", "hidden_idle", "mode", "now", "openrouter", "poll_ms", "spend", "stages", "title", "tokens_total", "v"}
+BEFORE_SINGLE_ENVELOPE = BEFORE_ENVELOPE - {"openrouter", "spend"}
 BEFORE_STAGE = {"account", "app", "cost_total", "counts", "cwd", "effort", "execution_id", "goal", "groups", "label", "last_activity", "latest_milestone", "launch_depth", "lead", "lead_ctx", "lead_kind", "lead_model", "lead_pid", "lead_since", "lead_state", "linkage", "live", "more_done", "native_id", "outcome", "output_available", "parent_id", "parent_session", "path", "project", "purpose_source", "reviews", "root_id", "root_session", "section", "session_id", "session_name", "solo", "tag", "tmux", "tokens_total", "workers"}
 BEFORE_ROW = {"account", "cost", "depth", "end", "errors", "execution_id", "family", "goal", "harness", "has_report", "is_review", "job", "level", "linkage", "model", "name", "native_id", "outcome", "output_available", "parent", "parent_id", "parent_session", "purpose_source", "quiet_s", "root_id", "root_session", "start", "state", "title", "tokens_total"}
 BEFORE_STAGE_PAYLOAD = {"account", "app", "brief_text", "cost_total", "counts", "cwd", "effort", "execution_id", "goal", "groups", "label", "last_activity", "latest_milestone", "launch_depth", "lead", "lead_ctx", "lead_kind", "lead_model", "lead_pid", "lead_since", "lead_state", "linkage", "live", "milestones", "native_id", "outcome", "output_available", "parent_id", "parent_session", "path", "project", "purpose_source", "reviews", "reviews_full", "root_id", "root_session", "section", "session_id", "session_name", "solo", "tag", "tmux", "tokens_total", "workers_full"}

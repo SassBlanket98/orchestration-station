@@ -49,9 +49,6 @@ from model import (
     Group,
     LeadInfo,
     Milestone,
-    OpenRouterSnapshot,
-    OpenRouterSpendDay,
-    OpenRouterSpendModel,
     QuotaAccount,
     QuotaCredit,
     QuotaExtra,
@@ -59,6 +56,9 @@ from model import (
     RegistrySnapshot,
     Review,
     Snapshot,
+    SpendDay,
+    SpendModel,
+    SpendSnapshot,
     Stage,
     Worker,
     home_path,
@@ -82,6 +82,10 @@ from registry import (
     read_registry,
 )
 
+_CO_SPEND_PROVIDERS: dict[str, tuple[str, tuple[str, ...]]] = {   # provider id -> (override env var, default quota args)
+    "openrouter": ("STATUS_OPENROUTER_CMD", ("openrouter", "--json")),
+    "openai": ("STATUS_OPENAI_CMD", ("openai", "--json")),
+}
 _co_quota_timeout = 20
 _co_quota_interval = 60
 _co_usage_sample_s = 300          # one usage sample per account every 5 minutes
@@ -2905,7 +2909,7 @@ def _co_totals(workers: list[Worker]) -> tuple[int | None, float | None]:
 _co_models_file = home_path("picker/models.json")
 # Picker subscription ids that bill per token: an API key (Anthropic, Cursor), Zen credits, OpenRouter.
 # opencode-go is a flat subscription, cursor-models and opencode-free are included, local is the GPU.
-_co_metered_routes = frozenset({"anthropic-api", "openrouter", "opencode-api", "cursor-api"})
+_co_metered_routes = frozenset({"anthropic-api", "openrouter", "openai-api", "opencode-api", "cursor-api"})
 _co_route_cache: dict[str, tuple[object, dict[str, str], float]] = {}
 _co_route_ttl_s = 60.0
 
@@ -3024,7 +3028,7 @@ class Collector:
 
     def __init__(self, stage_dir: str, *, quota: bool = True, openrouter_only: bool = False) -> None:
         # quota=False: no quota thread; the owner (GlobalCollector) reads quota once for all stages
-        # openrouter_only: with quota=False, a thread that polls just the OpenRouter command (the phone monitor's feed)
+        # openrouter_only: with quota=False, poll spend-provider commands only (the phone monitor's feed)
         self._co_stage = stage_dir
         self._co_logs: dict[str, LogState] = {}
         self._co_log_fp: dict[str, tuple[int, float, int, bytes]] = {}
@@ -3037,15 +3041,16 @@ class Collector:
         self._co_usage_path = os.path.expanduser(os.environ.get("STATUS_USAGE_HISTORY") or _co_default_usage_history)
         self._co_usage: list[tuple[float, dict[str, float]]] = []   # (time, account -> % used of its shortest window)
         self._co_usage_loaded = False
-        self._co_openrouter: OpenRouterSnapshot | None = None
-        self._co_openrouter_ever_ok = False
-        self._co_openrouter_last_ok = False
+        self._co_spend: dict[str, SpendSnapshot] = {}
+        self._co_spend_ever_ok: dict[str, bool] = {pid: False for pid in _CO_SPEND_PROVIDERS}
+        self._co_spend_last_ok: dict[str, bool] = {pid: False for pid in _CO_SPEND_PROVIDERS}
         self._co_clk = _co_clk_tck()
         self._co_page = _co_page_size()
         self._co_ghosts: dict[tuple[str, int], tuple[Worker, float | None]] = {}   # recently seen headless workers
         self._co_boot = _co_boot_time()
         self._co_quota_cmd = _co_command("STATUS_QUOTA_CMD", ("status", "--json"))
-        self._co_openrouter_cmd = _co_command("STATUS_OPENROUTER_CMD", ("openrouter", "--json"))
+        self._co_spend_cmds: dict[str, list[str]] = {
+            pid: _co_command(env_key, args) for pid, (env_key, args) in _CO_SPEND_PROVIDERS.items()}
         self._co_stop = threading.Event()
         self._co_quick = False   # first paint: GlobalCollector sets it to skip cold parses of finished workers' logs
         self._co_thread: threading.Thread | None = None
@@ -3132,60 +3137,147 @@ class Collector:
             return None
         return accounts
 
-    def _co_parse_openrouter(self, data: dict, now: float) -> OpenRouterSnapshot | None:
+    def _co_parse_spend(self, provider: str, data: dict, now: float) -> SpendSnapshot | None:
         try:
-            floor = data.get("floorUsd")
-            floor_usd = None if floor is None else float(floor)
+            floor_raw = data.get("floorUsd")
+            floor_usd = None
+            if floor_raw is not None:
+                try:
+                    floor_usd = float(floor_raw)
+                except (TypeError, ValueError, OverflowError):
+                    floor_usd = None
             cred = data.get("credit") or {}
-            balance = cred.get("balanceUsd")
+            bal = cred.get("balanceUsd")
+            balance_f: float | None = None
+            if bal is not None:
+                try:
+                    balance_f = float(bal)
+                except (TypeError, ValueError, OverflowError):
+                    balance_f = None
+            bal_block = data.get("balance") or {}
+            if balance_f is None and isinstance(bal_block, dict):
+                usd = bal_block.get("usd")
+                if usd is not None:
+                    try:
+                        balance_f = float(usd)
+                    except (TypeError, ValueError, OverflowError):
+                        balance_f = None
             balance_at_ms = cred.get("balanceAt")
+            if balance_at_ms is None and isinstance(bal_block, dict):
+                balance_at_ms = bal_block.get("at")
+            balance_at: float | None = None
+            if balance_at_ms is not None:
+                try:
+                    balance_at = float(balance_at_ms) / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    balance_at = None
             burn = cred.get("burnPerDayUsd")
+            burn_f: float | None = None
+            if burn is not None:
+                try:
+                    burn_f = float(burn)
+                except (TypeError, ValueError, OverflowError):
+                    burn_f = None
             out = cred.get("runsOutAt")
-            balance_at = None if balance_at_ms is None else float(balance_at_ms) / 1000.0
-            stale = balance_at is not None and now - balance_at > OPENROUTER_BALANCE_STALE_S
+            runs_out: float | None = None
+            if out is not None:
+                try:
+                    runs_out = float(out) / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    runs_out = None
+            stale_flag = data.get("stale")
+            stale = bool(stale_flag) if stale_flag is not None else False
+            if provider == OPENROUTER_ACCOUNT and balance_at is not None:
+                stale = stale or (now - balance_at > OPENROUTER_BALANCE_STALE_S)
             low = bool(cred.get("low", False))
-            balance_f = None if balance is None else float(balance)
             if balance_f is not None and floor_usd is not None and balance_f < floor_usd:
                 low = True
             spend = data.get("spend") or {}
-            since = str(spend.get("since", ""))
-            per_day: list[OpenRouterSpendDay] = []
+            since = str(spend.get("since", "")) if spend.get("since") is not None else ""
+            mtd: float | None = None
+            mtd_raw = spend.get("monthToDateUsd")
+            if mtd_raw is not None:
+                try:
+                    mtd = float(mtd_raw)
+                except (TypeError, ValueError, OverflowError):
+                    mtd = None
+            per_day: list[SpendDay] = []
             for row in (spend.get("perDay") or [])[:OPENROUTER_MAX_ROWS]:
-                per_day.append(OpenRouterSpendDay(
-                    date=str(row.get("date", "")),
-                    usd=float(row.get("usd", 0)),
-                    requests=int(row.get("requests", 0)),
-                ))
-            per_model: list[OpenRouterSpendModel] = []
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    per_day.append(SpendDay(
+                        date=str(row.get("date", "")),
+                        usd=float(row.get("usd", 0)),
+                        requests=int(row.get("requests", 0)),
+                    ))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            per_model: list[SpendModel] = []
             for row in (spend.get("perModel") or [])[:OPENROUTER_MAX_ROWS]:
-                per_model.append(OpenRouterSpendModel(
-                    model=str(row.get("model", "")),
-                    usd=float(row.get("usd", 0)),
-                    requests=int(row.get("requests", 0)),
-                    prompt_tokens=int(row.get("promptTokens", 0)),
-                    completion_tokens=int(row.get("completionTokens", 0)),
-                ))
-            return OpenRouterSnapshot(
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    per_model.append(SpendModel(
+                        model=str(row.get("model", "")),
+                        usd=float(row.get("usd", 0)),
+                        requests=int(row.get("requests", 0)),
+                        prompt_tokens=int(row.get("promptTokens", 0)),
+                        completion_tokens=int(row.get("completionTokens", 0)),
+                    ))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            budget = data.get("budget") or {}
+            budget_limit: float | None = None
+            budget_pct: float | None = None
+            if isinstance(budget, dict):
+                lim = budget.get("limitUsd")
+                if lim is not None:
+                    try:
+                        budget_limit = float(lim)
+                    except (TypeError, ValueError, OverflowError):
+                        budget_limit = None
+                used = budget.get("usedPct")
+                if used is not None:
+                    try:
+                        budget_pct = float(used)
+                    except (TypeError, ValueError, OverflowError):
+                        budget_pct = None
+            src = data.get("source")
+            source = str(src) if src is not None else None
+            label = str(data.get("account", provider) or provider)
+            if not (balance_f is not None or mtd is not None or per_day or per_model or since):
+                return None
+            return SpendSnapshot(
+                provider=label,
                 balance=balance_f,
                 floor_usd=floor_usd,
-                burn_per_day=None if burn is None else float(burn),
-                runs_out_at=None if out is None else float(out) / 1000.0,
+                burn_per_day=burn_f,
+                runs_out_at=runs_out,
                 balance_at=balance_at,
                 low=low,
                 stale=stale,
                 since=since,
                 per_day=per_day,
                 per_model=per_model,
+                month_to_date_usd=mtd,
+                budget_limit_usd=budget_limit,
+                budget_used_pct=budget_pct,
+                source=source,
             )
-        except (TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, OverflowError, AttributeError):
             return None
 
-    def _co_run_openrouter(self) -> OpenRouterSnapshot | None:
-        if not self._co_openrouter_cmd:
+    def _co_parse_openrouter(self, data: dict, now: float) -> SpendSnapshot | None:
+        return self._co_parse_spend(OPENROUTER_ACCOUNT, data, now)
+
+    def _co_run_spend(self, provider: str) -> SpendSnapshot | None:
+        cmd = self._co_spend_cmds.get(provider) or []
+        if not cmd:
             return None
         try:
             result = subprocess.run(
-                self._co_openrouter_cmd,
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -3203,12 +3295,15 @@ class Collector:
             return None
         if not isinstance(data, dict):
             return None
-        return self._co_parse_openrouter(data, time.time())
+        return self._co_parse_spend(provider, data, time.time())
+
+    def _co_run_openrouter(self) -> SpendSnapshot | None:
+        return self._co_run_spend(OPENROUTER_ACCOUNT)
 
     def _co_quota_loop(self) -> None:
         while not self._co_stop.is_set():
             accounts = self._co_run_quota() if self._co_quota_on else None
-            openrouter = self._co_run_openrouter()
+            spend_results = {pid: self._co_run_spend(pid) for pid in _CO_SPEND_PROVIDERS}
             with self._co_lock:
                 if self._co_quota_on:
                     self._co_quota_last_ok = accounts is not None
@@ -3218,10 +3313,11 @@ class Collector:
             if accounts is not None:
                 self._co_usage_sample(accounts, time.time())
             with self._co_lock:
-                self._co_openrouter_last_ok = openrouter is not None
-                if openrouter is not None:
-                    self._co_openrouter_ever_ok = True
-                    self._co_openrouter = openrouter
+                for pid, snap in spend_results.items():
+                    self._co_spend_last_ok[pid] = snap is not None
+                    if snap is not None:
+                        self._co_spend_ever_ok[pid] = True
+                        self._co_spend[pid] = snap
             if self._co_stop.wait(_co_quota_interval):
                 return
 
@@ -3284,13 +3380,26 @@ class Collector:
         with self._co_lock:
             return self._co_quota_ever_ok and self._co_quota_last_ok
 
-    def _co_openrouter_ok(self) -> bool:
+    def _co_spend_ok(self, provider: str) -> bool:
         with self._co_lock:
-            return self._co_openrouter_ever_ok and self._co_openrouter_last_ok
+            return self._co_spend_ever_ok.get(provider, False) and self._co_spend_last_ok.get(provider, False)
 
-    def _co_openrouter_snapshot(self) -> OpenRouterSnapshot | None:
+    def _co_spend_snapshot(self, provider: str) -> SpendSnapshot | None:
         with self._co_lock:
-            return self._co_openrouter
+            return self._co_spend.get(provider)
+
+    def _co_spend_state(self) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
+        with self._co_lock:
+            return dict(self._co_spend), {
+                pid: self._co_spend_ever_ok.get(pid, False) and self._co_spend_last_ok.get(pid, False)
+                for pid in _CO_SPEND_PROVIDERS
+            }
+
+    def _co_openrouter_ok(self) -> bool:
+        return self._co_spend_ok(OPENROUTER_ACCOUNT)
+
+    def _co_openrouter_snapshot(self) -> SpendSnapshot | None:
+        return self._co_spend_snapshot(OPENROUTER_ACCOUNT)
 
     def _co_quota_snapshot(self, workers: list[Worker]) -> list[QuotaAccount]:
         with self._co_lock:
@@ -5387,7 +5496,8 @@ class GlobalCollector:
 
     def dismiss(self, stage_path: str, now: float | None = None) -> bool:
         """Hide a station until its status files or its lead change. False when the file cannot be written."""
-        stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
+        if not stage_path.startswith("execution:"):   # an execution row is filtered by its own path; its dir would hide nothing
+            stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
         known_station = any(s.path == stage_path and s.dir for s in self._co_last_stages)
         openclaw_station = any(s.path == stage_path and s.lead_kind == "openclaw" for s in self._co_last_stages)
         if not known_station and not openclaw_station and not stage_path.startswith("execution:"):
@@ -5653,6 +5763,7 @@ class GlobalCollector:
         _co_metrics_leads(stages, now)
         _co_cc_fill_harness(stages)
         workers = [worker for stage in stages for worker in stage.snap.workers]
+        spend, spend_ok = self._co_quota._co_spend_state()
         return GlobalSnapshot(
             now=now,
             all_history=all_history,
@@ -5662,6 +5773,8 @@ class GlobalCollector:
             unattached=sum(len(stage.snap.workers) for stage in stages if stage.unattached),
             quota=self._co_quota._co_quota_snapshot(workers),
             quota_ok=self._co_quota._co_quota_ok(),
+            spend=spend,
+            spend_ok=spend_ok,
             openrouter=self._co_quota._co_openrouter_snapshot(),
             openrouter_ok=self._co_quota._co_openrouter_ok(),
             usage_history=self._co_quota._co_usage_series(now),

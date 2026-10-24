@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 
-from ccactions import Choice, spawn, spawn_choices
+from ccactions import Choice, cx_is_demo, spawn, spawn_choices
 from model import GlobalSnapshot, Stage, UIState
 
 try:
@@ -20,15 +20,17 @@ except ModuleNotFoundError:
 _now = time.time
 _CX_CHOICES: list[Choice] = []
 _CX_CHOICES_AT: float | None = None
+_CX_CHOICES_DEMO = False
 
 
 def choices() -> list[Choice]:
     """The picker list from `ccactions.spawn_choices()`, cached for 30 s (loaded by spawn_open)."""
-    global _CX_CHOICES, _CX_CHOICES_AT
+    global _CX_CHOICES, _CX_CHOICES_AT, _CX_CHOICES_DEMO
     now = _now()
-    if _CX_CHOICES_AT is None or now - _CX_CHOICES_AT > 30:
+    if _CX_CHOICES_AT is None or now - _CX_CHOICES_AT > 30 or _CX_CHOICES_DEMO != cx_is_demo():
         _CX_CHOICES = ccactions.spawn_choices()
         _CX_CHOICES_AT = now
+        _CX_CHOICES_DEMO = cx_is_demo()
     return _CX_CHOICES
 
 
@@ -40,7 +42,7 @@ def project_dir_of(gs: GlobalSnapshot, row_key: str) -> str:
     if stage is None:
         return ""
     for path in (stage.cwd, stage.dir, stage.path):
-        if path and os.path.isdir(path):
+        if path and (cx_is_demo() or os.path.isdir(path)):
             return path
     return ""
 
