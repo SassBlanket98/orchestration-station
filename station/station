@@ -35,6 +35,7 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
+from subprocess import DEVNULL
 from typing import NamedTuple
 from typing import Self
 from urllib.parse import parse_qs, urlsplit
@@ -94,7 +95,7 @@ ACT_BUCKETS = 60         # activity sparkline buckets
 ACT_BUCKET_S = 5         # seconds per bucket (60 x 5 s = last 5 minutes)
 TOOL_RING_S = 1800       # tool-call ring kept per log: the last 30 minutes, for the TOOLS/MIN sparkline
 TOOL_RING_MAX = 2000     # entries kept in the ring at most
-LEVEL_TAGS = ("LEAD", "SPAWN", "SUB", "WORKER", "CRON")   # hierarchy tag of a row (docs/monitor-ops-spec.md)
+LEVEL_TAGS = ("LEAD", "SPAWN", "SUB", "WORKER", "CRON")   # hierarchy tag of a row
 QUIET_S = 90             # running worker with no output this long -> "quiet"
 STALL_S = 300            # ... this long and cpu < STALL_CPU -> "stalled"
 STALL_CPU = 1.0
@@ -530,7 +531,7 @@ class Stage:
     lead_kind: str = ""                  # "claude", "claude work", "claude bg", "codex", "t3 code", "cursor", "opencode", "lead.json"; "" when gone
     lead_ctx: int | None = None          # the lead's context window now (tokens); None when its transcript is unreadable
     solo: bool = False                   # a lead is running and has delegated nothing this session; true for a station with no stage dir
-    # one Stage is one SESSION row (see docs/streams/monitor-design.md); `path` stays unique per row
+    # one Stage is one SESSION row; `path` stays unique per row
     dir: str = ""                        # the real stage directory the workers live in; "" means `path` itself
     session_id: str = ""                 # the lead session this row stands for; "" for an unlinked group of older workers
     session_name: str = ""               # short name, at most 3 words: lead.json "name", else the harness title cut to 3 words
@@ -675,7 +676,7 @@ class UIState:
     gturn: str = ""                      # openclaw page: run_id of the turn opened to its tool calls; "" = none
     gworker: str = ""                    # worker page ("wk"): the worker name on stage gstage
     gsess: bool = False                  # the worker page was opened from the session page: Esc goes back there
-    # control center (master-detail view, >=120 cols): see docs/monitor-control-center-plan.md
+    # control center (master-detail view, >=120 cols)
     cc: bool = False                     # master-detail view on (the app turns it on in global mode; v flips to the classic tree)
     cc_active: bool = False              # the last frame was drawn by the control center (render sets it; cckeys keys on it)
     cc_focus: str = "table"              # "table" | "pane" | "strip": which part takes arrows and wheel
@@ -718,6 +719,432 @@ def nest_workers(workers: list[Worker]) -> list[Worker]:
     for wk in workers:   # a parent loop has no root: keep its members listed
         add(wk)
     return out
+
+
+
+# ──────────────────── procs_darwin ────────────────────
+"""macOS process provider in the Linux table shape, read from ps, sysctl and lsof.
+
+Every reader returns empty on any failure (missing binary, timeout, non-zero exit, odd output).
+Known limits:
+- argv is split on whitespace, so an argument with spaces comes back as several words (comm is
+  then the first word of argv[0]); environ values with spaces are cut short.
+- macOS 15 and later print no environment for other processes (`ps -E`), so every environ read is
+  empty there: leads started with CLAUDE_CONFIG_DIR, CODEX_HOME or similar fall back to defaults.
+- start times come from `lstart` (local wall clock, whole seconds); a process started in the
+  repeated hour of a daylight-saving fall-back can be placed an hour off.
+"""
+
+
+_PD_CLK = 100                  # clock ticks per second, as ps and the Linux shape count them
+_PD_TIMEOUT = 5                # seconds per subprocess call
+_PD_TTL = 1.0                  # seconds one process table scan is reused
+_PD_FAIL_TTL = 10.0            # seconds a failed scan is reused before ps is tried again
+_PD_CWD_MAX = 2000             # cwd cache entries; the cache is cleared when it is full
+_PD_CWD_RETRY = 30.0           # seconds before a cwd lookup that failed (timeout, no lsof) is retried
+_PD_ENV_MAX = 2000             # environ cache entries; cleared when full
+_PD_TTY_BASE = 0x10000         # ttysNNN -> BASE + NNN (stable and non-zero)
+_PD_TTY_OTHER = 0x20000        # other tty names -> OTHER + crc32 of the name (stable, non-zero)
+_PD_LSTART_FMT = "%a %b %d %H:%M:%S %Y"
+_PD_TIME_RE = re.compile(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?$")
+_PD_SEC_RE = re.compile(r"\bsec\s*=\s*(\d+)")
+_PD_USEC_RE = re.compile(r"\busec\s*=\s*(\d+)")
+_PD_TTY_DIGITS_RE = re.compile(r"(\d+)$")
+
+# pid -> (ppid, utime, stime, start_ticks, tty, argv, rss_bytes)
+_pd_table_memo: tuple[float, dict[int, tuple]] | None = None
+_pd_boot_memo: float | None = None
+_pd_cwd_memo: dict[tuple[int, int], tuple[str, float]] = {}   # (pid, start) -> (cwd, retry_at)
+_pd_env_memo: dict[tuple[int, int, tuple[str, ...]], dict[str, str]] = {}
+_pd_env_visible: bool | None = None   # does `ps -E` show any environment here? (macOS 15: no)
+
+
+def _pd_run(argv: list[str], ok: tuple[int, ...] = (0,)) -> str | None:
+    """Stdout of a command, or None on any error or an exit code outside `ok`.
+
+    Output is decoded as UTF-8 with replacement: argv is arbitrary bytes, and one bad byte must not
+    lose the whole table.
+    """
+    try:
+        done = subprocess.run(argv, stdin=DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=_PD_TIMEOUT, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if done.returncode not in ok:
+        return None
+    return done.stdout
+
+
+def _pd_parse_cpu_time(text: str) -> float | None:
+    """Seconds from ps time: m:ss.cc, mm:ss.cc, h:mm:ss.cc or d-hh:mm:ss (fraction optional)."""
+    m = _PD_TIME_RE.match(text.strip())
+    if m is None:
+        return None
+    days, hours, minutes, seconds, frac = m.groups()
+    total = int(days or 0) * 86400 + int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
+    secs = float(total)
+    if frac:
+        secs += int(frac) / 10 ** len(frac)
+    return secs
+
+
+def _pd_parse_boottime(text: str) -> float | None:
+    """Epoch seconds from `sysctl -n kern.boottime` ({ sec = N, usec = M } ...)."""
+    m = _PD_SEC_RE.search(text)
+    if m is None:
+        return None
+    usec = _PD_USEC_RE.search(text)
+    return int(m.group(1)) + (int(usec.group(1)) / 1_000_000 if usec else 0.0)
+
+
+def _pd_tty_num(tty: str) -> int:
+    """A non-zero number for a controlling tty, 0 for none (`??` or `-`)."""
+    if tty in ("", "??", "-"):
+        return 0
+    m = _PD_TTY_DIGITS_RE.search(tty)
+    if m is not None:
+        return _PD_TTY_BASE + int(m.group(1))
+    return _PD_TTY_OTHER + zlib.crc32(tty.encode()) % 0x10000
+
+
+def _pd_parse_table(text: str, boot: float | None) -> dict[int, tuple]:
+    """Rows of `ps -axww -o pid=,ppid=,time=,rss=,tty=,lstart=,command=`, keyed by pid.
+
+    The start tick is 0 when boot is unknown. Malformed lines are skipped, never raised on.
+    """
+    table: dict[int, tuple] = {}
+    for line in text.splitlines():
+        parts = line.split(None, 10)
+        if len(parts) < 10:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+            rss = int(parts[3])
+            epoch = time.mktime(time.strptime(" ".join(parts[5:10]), _PD_LSTART_FMT))
+        except (ValueError, OverflowError):
+            continue
+        cpu = _pd_parse_cpu_time(parts[2])
+        if cpu is None:
+            continue
+        # The command is split on whitespace; argument spaces are lost (documented limit).
+        argv = tuple(parts[10].split()) if len(parts) > 10 else ()
+        start = 0 if boot is None else max(0, round((epoch - boot) * _PD_CLK))
+        table[pid] = (ppid, round(cpu * _PD_CLK), 0, start, _pd_tty_num(parts[4]),
+                      argv, rss * 1024)
+    return table
+
+
+def _pd_boot() -> float | None:
+    """Boot time in epoch seconds; read once and kept for the process lifetime."""
+    global _pd_boot_memo
+    if _pd_boot_memo is None:
+        out = _pd_run(["sysctl", "-n", "kern.boottime"])
+        if out is not None:
+            _pd_boot_memo = _pd_parse_boottime(out)
+    return _pd_boot_memo
+
+
+def _pd_table() -> dict[int, tuple]:
+    """The full process table, reused for _PD_TTL seconds; a stale or empty memo is re-read."""
+    global _pd_table_memo
+    now = time.monotonic()
+    memo = _pd_table_memo
+    if memo is not None and now - memo[0] < _PD_TTL:
+        return memo[1]
+    out = _pd_run(["ps", "-axww", "-o", "pid=,ppid=,time=,rss=,tty=,lstart=,command="])
+    if out is None:
+        # ps failed: keep the empty table longer so a broken or slow ps is not retried every refresh
+        _pd_table_memo = (now + _PD_FAIL_TTL - _PD_TTL, {})
+        return {}
+    rows = _pd_parse_table(out, _pd_boot())
+    _pd_table_memo = (now, rows)
+    return rows
+
+
+def _pd_boot_time() -> float:
+    """Boot time in epoch seconds; 0.0 when unknown."""
+    return _pd_boot() or 0.0
+
+
+def _pd_boot_id() -> str:
+    """kern.boottime whole seconds: the same for one boot, different after a reboot; "" when unknown."""
+    boot = _pd_boot()
+    return str(int(boot)) if boot else ""
+
+
+def _pd_scan() -> dict[int, tuple[int, int, int, int, int]]:
+    """pid -> (ppid, utime, stime, start_ticks, tty) for every process, as the Linux reader does."""
+    return {pid: row[:5] for pid, row in _pd_table().items()}
+
+
+def _pd_resident(pid: int, page: int) -> int | None:
+    """Resident set size in bytes; `page` is ignored (ps reports bytes already scaled)."""
+    row = _pd_table().get(pid)
+    return None if row is None else row[6]
+
+
+def _pd_argv(pid: int) -> list[str]:
+    """argv of a process, split on whitespace; [] when unknown."""
+    row = _pd_table().get(pid)
+    return [] if row is None else list(row[5])
+
+
+def _pd_stat(pid: int) -> tuple[int, int, str] | None:
+    """(ppid, start_ticks, comm) with comm the basename of argv[0]; None when unknown."""
+    row = _pd_table().get(pid)
+    if row is None:
+        return None
+    argv = row[5]
+    comm = os.path.basename(argv[0]) if argv else ""
+    return (row[0], row[3], comm)
+
+
+def _pd_parse_env(text: str, keys: Iterable[str]) -> dict[str, str]:
+    """Values of the requested KEY=VALUE tokens only; the last occurrence wins."""
+    names = frozenset(keys)
+    found: dict[str, str] = {}
+    for token in text.split():
+        name, sep, value = token.partition("=")
+        if sep and name in names:
+            found[name] = value
+    return found
+
+
+def _pd_environ(pid: int, keys: Iterable[str]) -> dict[str, str]:
+    """The requested environment variables of a process (own processes only); {} otherwise."""
+    global _pd_env_visible
+    wanted = tuple(keys)
+    if not wanted:
+        return {}
+    if _pd_env_visible is None:
+        # One probe of our own process: macOS 15 prints no environment, so skip a ps per call there.
+        probe = _pd_run(["ps", "-E", "-ww", "-o", "command=", "-p", str(os.getpid())])
+        _pd_env_visible = probe is not None and "PATH=" in probe
+    if not _pd_env_visible:
+        return {}
+    row = _pd_table().get(pid)
+    key = (pid, row[3] if row is not None else -1, wanted)
+    if key in _pd_env_memo:   # ps -E shows the environment at exec, so one read per process lifetime
+        return dict(_pd_env_memo[key])
+    out = _pd_run(["ps", "-E", "-ww", "-o", "command=", "-p", str(pid)])
+    if out is None:
+        return {}
+    found = _pd_parse_env(out, wanted)
+    if row is not None:   # no start time: not cached, so a reused pid cannot inherit it
+        if len(_pd_env_memo) >= _PD_ENV_MAX:
+            _pd_env_memo.clear()
+        _pd_env_memo[key] = found
+    return dict(found)
+
+
+def _pd_parse_lsof_cwd(text: str) -> dict[int, str]:
+    """pid -> cwd from `lsof -a -d cwd -Fn` output (p, f and n lines); pids may be several."""
+    found: dict[int, str] = {}
+    pid: int | None = None
+    for line in text.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:]) if line[1:].isdigit() else None
+        elif line.startswith("n") and len(line) > 1 and pid is not None and pid not in found:
+            found[pid] = line[1:]
+    return found
+
+
+def _pd_cwd(pid: int) -> str:
+    """Working directory of a process, cached per (pid, start_ticks).
+
+    A miss looks up this pid and every other uncached pid in the table with one lsof, so the first
+    snapshot costs one fork, not one per process. A process lsof cannot see (another user's) is
+    cached as "" for its lifetime; a failed lsof (missing, timeout) is retried after _PD_CWD_RETRY.
+    """
+    table = _pd_table()
+    now = time.monotonic()
+
+    def key_of(p: int) -> tuple[int, int]:
+        row = table.get(p)
+        return (p, row[3] if row is not None else -1)
+
+    def fresh(k: tuple[int, int]) -> bool:
+        hit = _pd_cwd_memo.get(k)
+        return hit is not None and now < hit[1]
+
+    key = key_of(pid)
+    if fresh(key):
+        return _pd_cwd_memo[key][0]
+    want = [pid] + [p for p in table if p != pid and not fresh(key_of(p))]
+    # lsof exits 1 when some pids are gone or hidden but still prints the rest
+    out = _pd_run(["lsof", "-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, want))], ok=(0, 1))
+    if len(_pd_cwd_memo) + len(want) > _PD_CWD_MAX:
+        _pd_cwd_memo.clear()
+    found = {} if out is None else _pd_parse_lsof_cwd(out)
+    # nothing at all came back (timeout, no lsof, or lsof read no pid): a failure for the whole batch,
+    # retried later, so the next caller does not pay the same timeout again
+    until = float("inf") if found else now + _PD_CWD_RETRY
+    for p in want:
+        if p in table:   # a pid missing from the table has no start time, so a reused pid could inherit it
+            _pd_cwd_memo[key_of(p)] = (found.get(p, ""), until)
+    return found.get(pid, "")
+
+
+
+# ──────────────────── procs ────────────────────
+"""Process-table reads (pid scan, argv, cwd, environ, stat, boot id) from /proc, with the macOS provider dispatched per function."""
+
+
+
+_PR_DARWIN = sys.platform == "darwin"
+
+
+def _pr_clk_tck() -> int:
+    try:
+        return int(os.sysconf("SC_CLK_TCK"))
+    except (ValueError, OSError, AttributeError):
+        return 100
+
+
+def _pr_boot_time() -> float:
+    if _PR_DARWIN:
+        return _pd_boot_time()
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    fields = line.split()
+                    if len(fields) >= 2:
+                        return float(fields[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8", errors="replace") as fh:
+            uptime = float(fh.read().split()[0])
+        return time.time() - uptime
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def _pr_scan() -> dict[int, tuple[int, int, int, int, int]]:
+    """pid -> (ppid, utime, stime, starttime_ticks, tty_nr) read from /proc/<pid>/stat."""
+    if _PR_DARWIN:
+        return _pd_scan()
+    procs: dict[int, tuple[int, int, int, int, int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return procs
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+        close = data.rfind(b")")
+        if close < 0:
+            continue
+        fields = data[close + 2:].split()
+        if len(fields) < 20:
+            continue
+        try:
+            procs[pid] = (
+                int(fields[1]),
+                int(fields[11]),
+                int(fields[12]),
+                int(fields[19]),
+                int(fields[4]),
+            )
+        except ValueError:
+            continue
+    return procs
+
+
+def _pr_stat(pid: int) -> tuple[int, int, str] | None:
+    """(ppid, starttime_ticks, comm) from /proc/<pid>/stat; None on any error.
+
+    comm sits between the first "(" and the LAST ")", since it may contain spaces and ")" itself.
+    """
+    if _PR_DARWIN:
+        return _pd_stat(pid)
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    open_paren = data.find(b"(")
+    close = data.rfind(b")")
+    if open_paren < 0 or close < open_paren:
+        return None
+    fields = data[close + 2:].split()
+    if len(fields) < 20:
+        return None
+    try:
+        ppid = int(fields[1])
+        start = int(fields[19])
+    except ValueError:
+        return None
+    comm = data[open_paren + 1:close].decode("utf-8", "replace")
+    return (ppid, start, comm)
+
+
+def _pr_resident(pid: int, page: int) -> int | None:
+    if _PR_DARWIN:
+        return _pd_resident(pid, page)
+    try:
+        with open(f"/proc/{pid}/statm", "r", encoding="utf-8", errors="replace") as fh:
+            fields = fh.read().split()
+        return int(fields[1]) * page
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _pr_argv(pid: int) -> list[str]:
+    """A process's argv from /proc/<pid>/cmdline; empty on any error."""
+    if _PR_DARWIN:
+        return _pd_argv(pid)
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return []
+    return [tok.decode("utf-8", "replace") for tok in data.split(b"\x00") if tok]
+
+
+def _pr_cwd(pid: int) -> str:
+    if _PR_DARWIN:
+        return _pd_cwd(pid)
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return ""
+
+
+def _pr_environ(pid: int, keys: tuple[str, ...]) -> dict[str, str]:
+    """The variables named in ``keys`` from /proc/<pid>/environ. The rest is never kept: it holds secrets."""
+    if _PR_DARWIN:
+        return _pd_environ(pid, keys)
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return {}
+    found: dict[str, str] = {}
+    for item in data.split(b"\0"):
+        key, sep, value = item.partition(b"=")
+        name = key.decode("utf-8", "replace")
+        if sep and name in keys:
+            found[name] = value.decode("utf-8", "replace")
+    return found
+
+
+def _pr_boot_id() -> str:
+    if _PR_DARWIN:
+        return _pd_boot_id()
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 
@@ -4952,10 +5379,7 @@ def _co_log_model_header(path: str) -> str:
 
 
 def _co_clk_tck() -> int:
-    try:
-        return int(os.sysconf("SC_CLK_TCK"))
-    except (ValueError, OSError, AttributeError):
-        return 100
+    return _pr_clk_tck()
 
 
 def _co_page_size() -> int:
@@ -4966,56 +5390,12 @@ def _co_page_size() -> int:
 
 
 def _co_boot_time() -> float:
-    try:
-        with open("/proc/stat", "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if line.startswith("btime "):
-                    fields = line.split()
-                    if len(fields) >= 2:
-                        return float(fields[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        with open("/proc/uptime", "r", encoding="utf-8", errors="replace") as fh:
-            uptime = float(fh.read().split()[0])
-        return time.time() - uptime
-    except (OSError, ValueError, IndexError):
-        return 0.0
+    return _pr_boot_time()
 
 
 def _co_scan_procs() -> dict[int, tuple[int, int, int, int, int]]:
-    """pid -> (ppid, utime, stime, starttime_ticks, tty_nr) read from /proc/<pid>/stat."""
-    procs: dict[int, tuple[int, int, int, int, int]] = {}
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return procs
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        try:
-            with open(f"/proc/{pid}/stat", "rb") as fh:
-                data = fh.read()
-        except OSError:
-            continue
-        close = data.rfind(b")")
-        if close < 0:
-            continue
-        fields = data[close + 2:].split()
-        if len(fields) < 20:
-            continue
-        try:
-            procs[pid] = (
-                int(fields[1]),
-                int(fields[11]),
-                int(fields[12]),
-                int(fields[19]),
-                int(fields[4]),
-            )
-        except ValueError:
-            continue
-    return procs
+    """pid -> (ppid, utime, stime, starttime_ticks, tty_nr) from the process provider."""
+    return _pr_scan()
 
 
 def _co_tree(root: int, children: dict[int, list[int]]) -> list[int]:
@@ -5033,22 +5413,12 @@ def _co_tree(root: int, children: dict[int, list[int]]) -> list[int]:
 
 
 def _co_resident(pid: int, page: int) -> int | None:
-    try:
-        with open(f"/proc/{pid}/statm", "r", encoding="utf-8", errors="replace") as fh:
-            fields = fh.read().split()
-        return int(fields[1]) * page
-    except (OSError, IndexError, ValueError):
-        return None
+    return _pr_resident(pid, page)
 
 
 def _co_argv(pid: int) -> list[str]:
-    """A process's argv from /proc/<pid>/cmdline; empty on any error."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return []
-    return [tok.decode("utf-8", "replace") for tok in data.split(b"\x00") if tok]
+    """A process's argv from the process provider; empty on any error."""
+    return _pr_argv(pid)
 
 
 def _co_argv_name(pid: int) -> str:
@@ -5178,10 +5548,7 @@ class _co_Lead(NamedTuple):
 
 
 def _co_cwd(pid: int) -> str:
-    try:
-        return os.readlink(f"/proc/{pid}/cwd")
-    except OSError:
-        return ""
+    return _pr_cwd(pid)
 
 
 _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "OPENCODE_SESSION_ID",
@@ -5190,19 +5557,8 @@ _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "
 
 
 def _co_environ(pid: int) -> dict[str, str]:
-    """The variables in ``_co_environ_keys`` from /proc/<pid>/environ. The rest is never kept: it holds secrets."""
-    try:
-        with open(f"/proc/{pid}/environ", "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return {}
-    found: dict[str, str] = {}
-    for item in data.split(b"\0"):
-        key, sep, value = item.partition(b"=")
-        name = key.decode("utf-8", "replace")
-        if sep and name in _co_environ_keys:
-            found[name] = value.decode("utf-8", "replace")
-    return found
+    """The variables in ``_co_environ_keys`` from the process provider. The rest is never kept: it holds secrets."""
+    return _pr_environ(pid, _co_environ_keys)
 
 
 _co_ctx_cache: dict[str, tuple[float, int, int, int, int | None]] = {}   # transcript -> mtime, size, inode, ctime, window
@@ -6361,7 +6717,7 @@ def _co_account_for(family: str, label: str) -> str | None:
 
 
 def _co_current_boot_id() -> str:
-    return _co_read_text("/proc/sys/kernel/random/boot_id").strip()
+    return _pr_boot_id()
 
 
 def _co_absent(value: object) -> bool:
@@ -8155,7 +8511,7 @@ def find_stages(roots: list[str], depth: int = SCAN_DEPTH) -> list[tuple[str, st
         else:
             parent = os.path.basename(os.path.dirname(os.path.dirname(stage)))
             labels[stage] = f"{name} ({parent})" if parent else name
-    for stage in list(labels):   # a stage dir inside another (`<stage>/review/`) is named after its parent: "quota-service (review)"
+    for stage in list(labels):   # a stage dir inside another (`<stage>/review/`) is named after its parent: "billing-api (review)"
         parent = os.path.dirname(stage)
         if parent in labels:
             labels[stage] = f"{labels[parent]} ({os.path.basename(stage)})"
@@ -9228,10 +9584,12 @@ class GlobalCollector:
             _co_native_cache[home] = (mono, tuple(native))
         # Roots constrain discovery only. Ownership is still resolved exclusively from execution IDs,
         # explicit parent links, or exact PID/start identity.
-        allowed = [os.path.normpath(os.path.expanduser(root)) for root in self._co_roots]
+        # both sides resolved: roots arrive resolved, and a stored cwd may still hold a symlink
+        allowed = [os.path.realpath(os.path.expanduser(root)) for root in self._co_roots]
 
         def in_scope(rec: ExecutionRecord) -> bool:
-            cwd = os.path.normpath(os.path.expanduser(rec.cwd)) if rec.cwd else ""
+            raw = os.path.expanduser(rec.cwd) if rec.cwd else ""
+            cwd = os.path.realpath(raw) if os.path.isabs(raw) else ""   # relative: never under a root
             return bool(cwd and any(cwd == root or cwd.startswith(root.rstrip(os.sep) + os.sep) for root in allowed))
 
         # Registry records get the same roots scope as native ones; a record with no cwd, or a non-absolute cwd,
@@ -9674,7 +10032,8 @@ class GlobalCollector:
         """Hide a station until its status files or its lead change. False when the file cannot be written."""
         if not stage_path.startswith("execution:"):   # an execution row is filtered by its own path; its dir would hide nothing
             stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
-        known_station = any(s.path == stage_path and s.dir for s in self._co_last_stages)
+        # by dir: a station split into session rows (`#<sid>`, `#unlinked`) has no row whose path is the bare dir
+        known_station = any(s.dir == stage_path or (s.path == stage_path and s.dir) for s in self._co_last_stages)
         openclaw_station = any(s.path == stage_path and s.lead_kind == "openclaw" for s in self._co_last_stages)
         if not known_station and not openclaw_station and not stage_path.startswith("execution:"):
             return False
@@ -10503,10 +10862,10 @@ class _dm_Spec:
 _dm_SPECS = (
     _dm_Spec("map-routes", "Map API routes",
              "List every HTTP route in src/api with its handler, middleware and test.",
-             "luna@medium", "codex", _dm_SESSION_START, _dm_SESSION_START + 240, DONE, has_report=True),
+             "model-b", "codex", _dm_SESSION_START, _dm_SESSION_START + 240, DONE, has_report=True),
     _dm_Spec("api-routes", "Move routes to shared auth",
              "Put every src/api route behind the shared auth middleware and keep tests green.",
-             "sonnet-work medium", "claude", _dm_SESSION_START + 300, None, pid=48211),
+             "model-b medium", "claude", _dm_SESSION_START + 300, None, pid=48211),
     _dm_Spec("db-schema", "Add plan_id to accounts",
              "Add accounts.plan_id with a foreign key, an index and a reversible migration.",
              "opencode-go/deepseek-v4.1-flash", "deepseek", _dm_SESSION_START + 420, 20.0, DONE,
@@ -10921,7 +11280,7 @@ def demo_page_lines(view: str, worker: str = "") -> list[str]:
                 "  Goal: put every src/api route behind the shared auth middleware and keep the tests green.",
                 "  Workers: api-routes (routes), db-schema (migration), ui-cards (usage cards).",
                 "", "quota picks (PROGRESS.md)",
-                "  22:40 pick api-routes -> sonnet-work (medium), 62% headroom",
+                "  22:40 pick api-routes -> model-b (medium), 62% headroom",
                 "  22:42 pick db-schema -> deepseek (high), 91% headroom"]
     if view == "files":
         who = worker or "the selected worker"
@@ -10989,7 +11348,7 @@ def _wd_lerp_rgb(a: _wd_Rgb, b: _wd_Rgb, x: float) -> _wd_Rgb:
 
 _wd_SPARK_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_lerp_rgb(_wd_C_FAINT, _wd_C_BLUE, 0.55)), (0.5, _wd_C_BLUE), (1.0, _wd_C_CYAN)]
 _wd_QUOTA_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_GREEN), (70.0, _wd_C_AMBER), (95.0, _wd_C_RED)]
-_wd_CTX_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_SUB), (50.0, _wd_C_SUB), (75.0, _wd_C_AMBER), (92.0, _wd_C_RED)]
+_wd_CTX_STOPS: list[tuple[float, _wd_Rgb]] = [(0.0, _wd_C_SUB), (50.0, _wd_C_SUB), (80.0, _wd_C_AMBER), (100.0, _wd_C_RED)]
 
 _wd_RESET = "\x1b[0m"
 _wd_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -11025,7 +11384,7 @@ def _wd_pct_color(pct: float) -> _wd_Rgb:
 
 
 def _wd_ctx_color(pct: float | None) -> _wd_Rgb:
-    """Context fill: the normal text colour to half the window, easing through amber to red near the limit."""
+    """Context fill as a percentage of the danger limit: normal to half of it, amber at 80%, red at the limit."""
     return _wd_C_SUB if pct is None else _wd_gradient(_wd_CTX_STOPS, pct)
 
 
@@ -12296,6 +12655,11 @@ def _uv_two_up(blocks: list[list[str]], cw: int) -> list[str]:
     return out
 
 
+_UV_NO_SOURCES = "no usage data: no quota or spend command answered"
+_UV_NO_SOURCES_HINT = "set STATUS_QUOTA_CMD, STATUS_OPENROUTER_CMD or STATUS_OPENAI_CMD"
+_UV_QUOTA_DOWN = "quota unavailable (STATUS_QUOTA_CMD missing or not answering)"
+
+
 def _uv_merge_spend(openrouter: SpendSnapshot | None, openrouter_ok: bool,
                     spend: dict[str, SpendSnapshot] | None, spend_ok: dict[str, bool] | None) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
     merged: dict[str, SpendSnapshot] = dict(spend or {})
@@ -12314,25 +12678,30 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnap
                 spend_ok: dict[str, bool] | None = None) -> tuple[list[str], int, int]:
     """(body lines, 0, number of subscriptions). Every subscription is a block with all its windows; the
     concerns are separate labelled sections: subscriptions, API credits, OpenRouter, no live data."""
-    if not quota_ok:
-        return [_uv_c("quota unavailable (quota service not reachable)", _wd_C_DIM)], 0, 0
     history = history or {}
     spend_map, spend_ok_map = _uv_merge_spend(openrouter, openrouter_ok, spend, spend_ok)
     spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if spend_ok_map.get(pid) and spend_map.get(pid)}
-    live, credit, quiet = _uv_groups(quota, spend_shown)
+    if not quota_ok and not spend_shown:
+        return [_uv_c(_UV_NO_SOURCES, _wd_C_DIM), _uv_c(_UV_NO_SOURCES_HINT, _wd_C_DIM)], 0, 0
+    # Spend comes from its own commands, so a missing or failing quota command only drops the subscription sections.
+    live, credit, quiet = _uv_groups(quota if quota_ok else [], spend_shown)
     nw = max((_wd_width(_wd_clean(a.name)) for a in credit), default=6)
     cw = (iw - 3) // 2 if two_up else iw
     bw = min(max(cw - (4 + 12 + 1 + 4 + 3 + 15 + 18), 10), 44)
     gap = [""] if airy else []
-    lines: list[str] = [_uv_rule("SUBSCRIPTIONS", f"{len(live)} live", iw)] + gap
-    blocks = [_uv_block(a, bw, cw, now, history.get(a.name), spark) for a in live]
-    if two_up:
-        lines += _uv_two_up(blocks, cw)
+    lines: list[str] = []
+    if quota_ok:
+        lines += [_uv_rule("SUBSCRIPTIONS", f"{len(live)} live", iw)] + gap
+        blocks = [_uv_block(a, bw, cw, now, history.get(a.name), spark) for a in live]
+        if two_up:
+            lines += _uv_two_up(blocks, cw)
+        else:
+            for blk in blocks:
+                lines += blk + [""]
+        if not live:
+            lines += [_uv_c("  none reporting", _wd_C_DIM), ""]
     else:
-        for blk in blocks:
-            lines += blk + [""]
-    if not live:
-        lines += [_uv_c("  none reporting", _wd_C_DIM), ""]
+        lines += [_uv_rule("SUBSCRIPTIONS", "unavailable", iw)] + gap + [_uv_c("  " + _UV_QUOTA_DOWN, _wd_C_DIM), ""]
     if credit:
         lines += [_uv_rule("API CREDITS", "", iw)] + gap
         for a in credit:
@@ -12598,6 +12967,7 @@ class _og_Cells:
     model: str = ""
     ctx_pct: int | None = None
     ctx_tokens: int | None = None     # the context size itself; the CTX cell shows it, coloured by ctx_pct
+    ctx_limit: int | None = None      # the danger limit ctx_pct is measured against (`_og_ctx_limit`)
     ctx_has_data: bool = False        # raw ctx exists even when window is missing (cell still draws `—`)
     tokens: int | None = None
     cost: float | None = None
@@ -12683,7 +13053,8 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     if wk.effort:
         effort = _og_effort(wk.effort)
         model = f"{model} · {effort}" if model else effort
-    ctx = _og_pct(log.ctx_tokens, log.ctx_window)
+    ctx_limit = _og_ctx_limit(log.ctx_window, wk.model, log.model)
+    ctx = _og_pct(log.ctx_tokens, ctx_limit)
     tokens = _og_tokens(log.tokens_in, log.tokens_out)
     has_log = bool(log.path or log.steps or log.tool_counts or log.tool_pulses or log.last_ts)
     tools = sum(log.tool_counts.values()) if has_log else None
@@ -12691,7 +13062,8 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     local = _og_local(wk.family, wk.account, log.harness, wk.model, log.model)
     return _og_Cells(
         tag=wk.level_tag or "WORKER", harn=_og_worker_harness(wk), model=model, ctx_pct=ctx,
-        ctx_tokens=log.ctx_tokens, ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
+        ctx_tokens=log.ctx_tokens, ctx_limit=ctx_limit,
+        ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
         tokens=tokens, cost=log.cost, cost_note="local" if local else "", elapsed=_og_worker_elapsed(wk, now),
         tools=tools, pulses=list(log.tool_pulses), now=step.text if step else "",
         now_age=max(0.0, now - log.last_ts) if step and log.last_ts else None, live=live,
@@ -12704,7 +13076,8 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     if stage.effort:
         effort = _og_effort(stage.effort)
         model = f"{model} · {effort}" if model else effort
-    pct = _og_pct(stage.lead_ctx, stage.lead_ctx_window)
+    ctx_limit = _og_ctx_limit(stage.lead_ctx_window, stage.lead_model)
+    pct = _og_pct(stage.lead_ctx, ctx_limit)
     name = stage.display_name or stage.session_name or stage.label
     tag = "" if stage.unlinked else stage.level_tag or ("LEAD" if not stage.parent else "SPAWN")
     harn = _og_stage_harness(stage)
@@ -12712,7 +13085,7 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     stamp, text = stage.doing[-1] if live and stage.doing else (0.0, "")
     local = _og_local(stage.tag, stage.lead_kind, stage.vitals.provider if stage.vitals else "", model, name)
     return _og_Cells(
-        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx,
+        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx, ctx_limit=ctx_limit,
         ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
         tokens=stage.lead_tokens, cost=stage.lead_cost,
         cost_note="local" if local else "", elapsed=_og_stage_elapsed(stage, now),
@@ -12902,6 +13275,20 @@ def _og_pct(used: int | None, window: int | None) -> int | None:
     return round(used * 100 / window) if used is not None and window else None
 
 
+# Danger limits in tokens (the user 2026-10-25). Haiku's is hard: 100k, with autocompact at 80k. Opus and Sonnet get 300k
+# to be safe. The window caps a limit; any other model is measured against its own window.
+_OG_CTX_LIMITS = (("haiku", 100_000), ("opus", 300_000), ("sonnet", 300_000))
+
+
+def _og_ctx_limit(window: int | None, *models: str | None) -> int | None:
+    """The token count at which this model's context turns red: a fixed limit for Haiku/Opus/Sonnet, else its window."""
+    text = " ".join(str(model or "").lower() for model in models)
+    for key, limit in _OG_CTX_LIMITS:
+        if key in text:
+            return min(limit, window) if window else limit
+    return window or None
+
+
 def _og_tokens(tokens_in: int | None, tokens_out: int | None) -> int | None:
     return None if tokens_in is None and tokens_out is None else (tokens_in or 0) + (tokens_out or 0)
 
@@ -12948,11 +13335,14 @@ def _og_ctx_cell(tokens: int | None, pct: int | None) -> str:
 
 
 def _og_ctx_text(cells: object) -> str:
-    """`82k · 41%` for the detail views; `82k` without a window, empty when unknown."""
+    """`82k of 300k · 27%` (size, danger limit, share of it) for the detail views; `82k` without a limit."""
     tokens, pct = getattr(cells, "ctx_tokens", None), getattr(cells, "ctx_pct", None)
+    limit = getattr(cells, "ctx_limit", None)
     if tokens is None:
         return "" if pct is None else f"{pct}%"
-    return _wd_fmt_tok(tokens) + ("" if pct is None else f" · {pct}%")
+    if not limit or pct is None:
+        return _wd_fmt_tok(tokens)
+    return f"{_wd_fmt_tok(tokens)} of {_wd_fmt_tok(limit)} · {pct}%"
 
 
 def _og_worker_elapsed(wk: Worker, now: float) -> str:
@@ -13805,6 +14195,7 @@ class _cpn_Row:
     tokens_total: int | None = None
     ctx: int | None = None
     ctx_window: int | None = None
+    ctx_limit: int | None = None
     cost: float | None = None
     elapsed: str = ""
     cpu: float | None = None
@@ -13840,7 +14231,7 @@ def _cpn_row(stage: Stage, worker: Worker | None, now: float) -> _cpn_Row:
             goal=stage.goal, outcome=stage.outcome, lead=True,
             brief=list(stage.brief_text), prompt=list(stage.prompt), system_prompt=list(stage.system_prompt),
             calls=list(stage.calls), tokens_total=stage.lead_tokens, ctx=stage.lead_ctx,
-            ctx_window=stage.lead_ctx_window, cost=stage.lead_cost, elapsed=cells.elapsed,
+            ctx_window=stage.lead_ctx_window, ctx_limit=cells.ctx_limit, cost=stage.lead_cost, elapsed=cells.elapsed,
             pulses=[], tool_pulses=list(stage.lead_tool_pulses), doing=list(stage.doing), work=stage.work,
         )
     log = worker.log
@@ -13852,7 +14243,7 @@ def _cpn_row(stage: Stage, worker: Worker | None, now: float) -> _cpn_Row:
         brief=list(worker.brief_text), prompt=list(worker.prompt), system_prompt=list(worker.system_prompt),
         calls=list(worker.calls), steps=list(log.steps), tool_counts=dict(log.tool_counts),
         tokens_in=log.tokens_in, tokens_out=log.tokens_out, tokens_cache=log.tokens_cache,
-        tokens_total=tokens_total, ctx=log.ctx_tokens, ctx_window=log.ctx_window, cost=log.cost,
+        tokens_total=tokens_total, ctx=log.ctx_tokens, ctx_window=log.ctx_window, ctx_limit=cells.ctx_limit, cost=log.cost,
         elapsed=cells.elapsed, cpu=worker.cpu, rss=worker.rss, pid=worker.pid, errors=log.errors,
         result=list(worker.result_text) or list(worker.summary), failure=worker.failure, flags=worker.flags,
         pulses=list(log.pulses), tool_pulses=list(log.tool_pulses), work=stage.work,
@@ -13974,15 +14365,16 @@ def _cpn_tokens_body(row: _cpn_Row) -> str:
 
 
 def _cpn_ctx_body(row: _cpn_Row, cols: int) -> str:
-    pct = _og_pct(row.ctx, row.ctx_window)
-    if row.ctx is None and row.ctx_window is None:
+    limit = row.ctx_limit or row.ctx_window
+    pct = _og_pct(row.ctx, limit)
+    if row.ctx is None and limit is None:
         return _cpn_unknown()
-    if row.ctx_window:
+    if limit:
         used = _wd_fmt_tok(row.ctx) if row.ctx is not None else "—"
-        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_ctx_color(pct))
+        body = _wd_c(f"{used} of {_wd_fmt_tok(limit)}", _wd_ctx_color(pct))
         if pct is not None:
             width = min(14, max(4, cols - 34))
-            body += " " + _wd_gauge_bar(pct / 100, width, _wd_pct_color(pct))
+            body += " " + _wd_gauge_bar(min(pct, 100) / 100, width, _wd_ctx_color(pct))
         return body
     return _wd_c(f"{_wd_fmt_tok(row.ctx)} (window unknown)", _wd_C_TEXT)
 
@@ -14222,7 +14614,7 @@ def _cpn_meter_body(label: str, pulses: list[tuple[float, int]], now: float, col
 
 def _cpn_metrics(row: _cpn_Row, cols: int, now: float) -> list[str]:
     if not (row.pulses or row.tool_pulses or _cpn_tokens_text(row) or row.ctx is not None
-            or row.ctx_window is not None):
+            or row.ctx_window is not None or row.ctx_limit is not None):
         return _cpn_empty("no metrics yet: no token, context or event counts recorded", cols)
     labels = ["TOOLS/MIN", "EVENTS/MIN", "CTX", "TOKENS"]
     label_w = _cpn_label_width(labels, cols)
@@ -15486,7 +15878,7 @@ _tu_STEPS: tuple[TutStep, ...] = (
     TutStep("You are set",
             ("That is every screen. Remember w for the station view and ? for the key list. The mouse works too: click a row, double-click to open it, wheel to scroll.",
              "Not in the demo: OpenClaw sessions have a turn-by-turn page, and 5 shows OpenRouter spend when it is set up.",
-             "Run `station --tutorial` any time to come back. docs/monitor-control-center.md has the full key list. Press . to finish.")),
+             "Run `station --tutorial` any time to come back. Press ? for the full key list. Press . to finish.")),
 )
 
 
@@ -18102,7 +18494,7 @@ def _rd_quota_full(snap: Snapshot, w: int, h: int, now: float) -> list[str]:
     iw, ih = w - 2, h - 2
     title = _rd_title_main("quota", "all windows")
     if not snap.quota_ok:
-        msg = _rd_dim("quota unavailable (quota service not reachable)")
+        msg = _rd_dim("quota unavailable (STATUS_QUOTA_CMD missing or not answering)")
         return _wd_box([""] * max(0, (ih - 1) // 2) + [_wd_center(msg, iw)], w, h, title)
     ww = min(8, max((len(win.name) for a in snap.quota for win in a.windows), default=2))
     bw = min(max(iw - (2 + ww + 1 + 1 + 4 + 2 + 9), 8), 50)
@@ -19888,7 +20280,8 @@ def _rd_g_meta(row: _rd_GRow, w: int, expanded: bool = False, depth: int = 0) ->
 def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
     items: list[tuple[str, str]] = []   # (account text, countdown or "")
     ranked = []
-    for acct in gs.quota:
+    quota = gs.quota if gs.quota_ok else []   # spend chips still show when the quota command is down
+    for acct in quota:
         if not acct.windows:
             continue
         win = _rd_quota_winner(acct)
@@ -19907,13 +20300,13 @@ def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
         if not gs.spend_ok.get(pid) or snap is None or not _rd_spend_masthead_chip(snap):
             continue
         items.append((_rd_spend_chip_paint(snap), ""))
-    for acct in gs.quota:
+    for acct in quota:
         if acct.name in spend_shown:
             continue
         if acct.credit is not None and acct.credit.balance is not None:
             items.append((_rd_dim(_wd_clean(acct.name)) + " "
                           + _wd_c(f"${acct.credit.balance:.2f}", _wd_C_RED if acct.credit.low else _wd_C_TEXT, bold=True), ""))
-    if not gs.quota_ok or not items:
+    if not items:
         return _rd_dim("quota offline")
 
     def build(with_ttr: bool, n: int) -> str:
@@ -20711,8 +21104,7 @@ JSON-serialisable envelope the web client renders, and read one worker's files
 for the detail panel. No dataclass, tuple or set leaves these functions; every
 ``None`` maps to JSON ``null``.
 
-The envelope and element shapes are the binding interface in
-``docs/contract-web.md``.
+The envelope and element shapes below are what the Station Dashboard reads.
 """
 
 
@@ -21614,6 +22006,8 @@ _AP_TITLE_DELETE = f"\x1b_Ga=d,d=I,i={_rd_TITLE_ID},q=2\x1b\\".encode("ascii")
 _AP_CSI_FINAL = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end", "Z": "btab"}
 _AP_CSI_TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn"}
 _AP_DEFAULT_ROOTS = ("~",)
+# Process actions (stop, kill, resume, spawn, ending sessions, /api/control) need --allow-actions.
+_AP_ACTIONS_DEFAULT = False
 _AP_PAGE_OPEN = {"L": "lead", "C": "cost", "F": "files"}   # station keys that open a page
 
 
@@ -21632,10 +22026,13 @@ def _ap_global_mode(args: argparse.Namespace, script_dir: str) -> bool:
 
 
 def _ap_roots(args: argparse.Namespace) -> list[str]:
+    """Roots resolved once: process cwds come back resolved (macOS /tmp is /private/tmp), so roots must match."""
     if args.roots:
-        return args.roots
-    env = os.environ.get("STATUS_ROOTS", "")
-    return [x for x in env.split(":") if x] if env else list(_AP_DEFAULT_ROOTS)
+        roots = list(args.roots)
+    else:
+        env = os.environ.get("STATUS_ROOTS", "")
+        roots = [x for x in env.split(os.pathsep) if x] if env else list(_AP_DEFAULT_ROOTS)
+    return [os.path.realpath(os.path.expanduser(x)) for x in roots]
 
 
 def _ap_help_key(ui: UIState, key: str) -> bool:
@@ -22818,11 +23215,18 @@ class _ap_Notifier:
 
     def send(self, summary: str, body: str, urgency: str) -> None:
         if shutil.which("notify-send") is None:
-            return
+            if sys.platform != "darwin" or shutil.which("osascript") is None:
+                return
+            # text goes in as argv, so no AppleScript quoting (non-ASCII and quotes stay intact)
+            argv = ["osascript", "-e", "on run argv", "-e",
+                    "display notification (item 1 of argv) with title (item 2 of argv)",
+                    "-e", "end run", "--", body, summary]   # "--": text starting with - is not an option
+        else:
+            argv = ["notify-send", "-a", "workers", "-u", urgency, summary, body]
         self.procs = [p for p in self.procs if p.poll() is None]  # reap finished ones
         try:
             self.procs.append(subprocess.Popen(
-                ["notify-send", "-a", "workers", "-u", urgency, summary, body],
+                argv,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             ))
         except OSError:
@@ -23321,6 +23725,7 @@ def _ap_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-notify", action="store_true", help="no desktop notifications")
     p.add_argument("--allow-actions", action="store_true",
                    help="enable confirmed process actions (stop, kill, resume, spawn, ending sessions)")
+    p.add_argument("--read-only", action="store_true", help="turn process actions off")
     p.add_argument("--title-test", action="store_true", help="draw the masthead picture once and print the terminal's replies")
     p.add_argument("--version", action="version", version=f"station {_AP_VERSION}")
     p.add_argument("-v", action="store_true", help=argparse.SUPPRESS)
@@ -23484,11 +23889,17 @@ def _ap_tutorial(args: argparse.Namespace) -> int:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _ap_actions_allowed(args: argparse.Namespace) -> bool:
+    """--read-only wins; otherwise --allow-actions or the build's default."""
+    return not getattr(args, "read_only", False) and (bool(getattr(args, "allow_actions", False)) or _AP_ACTIONS_DEFAULT)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _ap_parser().parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    args.allow_actions = _ap_actions_allowed(args)
     script_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
     if args.title_test:
         return _ap_title_test()
@@ -23514,7 +23925,7 @@ def main(argv: list[str] | None = None) -> int:
                     lambda stage, name, since=None: worker_detail(stage, name, since),
                     global_stage,
                     host=args.host, port=args.port,
-                    control_fn=lambda path, action: _ap_control(collector_g, path, action),
+                    control_fn=(lambda path, action: _ap_control(collector_g, path, action)) if args.allow_actions else None,
                 )
             finally:
                 collector_g.close()

@@ -75,6 +75,16 @@ from native import (
     read_opencode_sessions,
 )
 from openclaw import Reader, tool_pulses
+from procs import (
+    _pr_argv,
+    _pr_boot_id,
+    _pr_boot_time,
+    _pr_clk_tck,
+    _pr_cwd,
+    _pr_environ,
+    _pr_resident,
+    _pr_scan,
+)
 from registry import (
     default_registry_root,
     execution_key,
@@ -776,10 +786,7 @@ def _co_log_model_header(path: str) -> str:
 
 
 def _co_clk_tck() -> int:
-    try:
-        return int(os.sysconf("SC_CLK_TCK"))
-    except (ValueError, OSError, AttributeError):
-        return 100
+    return _pr_clk_tck()
 
 
 def _co_page_size() -> int:
@@ -790,56 +797,12 @@ def _co_page_size() -> int:
 
 
 def _co_boot_time() -> float:
-    try:
-        with open("/proc/stat", "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if line.startswith("btime "):
-                    fields = line.split()
-                    if len(fields) >= 2:
-                        return float(fields[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        with open("/proc/uptime", "r", encoding="utf-8", errors="replace") as fh:
-            uptime = float(fh.read().split()[0])
-        return time.time() - uptime
-    except (OSError, ValueError, IndexError):
-        return 0.0
+    return _pr_boot_time()
 
 
 def _co_scan_procs() -> dict[int, tuple[int, int, int, int, int]]:
-    """pid -> (ppid, utime, stime, starttime_ticks, tty_nr) read from /proc/<pid>/stat."""
-    procs: dict[int, tuple[int, int, int, int, int]] = {}
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return procs
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        try:
-            with open(f"/proc/{pid}/stat", "rb") as fh:
-                data = fh.read()
-        except OSError:
-            continue
-        close = data.rfind(b")")
-        if close < 0:
-            continue
-        fields = data[close + 2:].split()
-        if len(fields) < 20:
-            continue
-        try:
-            procs[pid] = (
-                int(fields[1]),
-                int(fields[11]),
-                int(fields[12]),
-                int(fields[19]),
-                int(fields[4]),
-            )
-        except ValueError:
-            continue
-    return procs
+    """pid -> (ppid, utime, stime, starttime_ticks, tty_nr) from the process provider."""
+    return _pr_scan()
 
 
 def _co_tree(root: int, children: dict[int, list[int]]) -> list[int]:
@@ -857,22 +820,12 @@ def _co_tree(root: int, children: dict[int, list[int]]) -> list[int]:
 
 
 def _co_resident(pid: int, page: int) -> int | None:
-    try:
-        with open(f"/proc/{pid}/statm", "r", encoding="utf-8", errors="replace") as fh:
-            fields = fh.read().split()
-        return int(fields[1]) * page
-    except (OSError, IndexError, ValueError):
-        return None
+    return _pr_resident(pid, page)
 
 
 def _co_argv(pid: int) -> list[str]:
-    """A process's argv from /proc/<pid>/cmdline; empty on any error."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return []
-    return [tok.decode("utf-8", "replace") for tok in data.split(b"\x00") if tok]
+    """A process's argv from the process provider; empty on any error."""
+    return _pr_argv(pid)
 
 
 def _co_argv_name(pid: int) -> str:
@@ -1002,10 +955,7 @@ class _co_Lead(NamedTuple):
 
 
 def _co_cwd(pid: int) -> str:
-    try:
-        return os.readlink(f"/proc/{pid}/cwd")
-    except OSError:
-        return ""
+    return _pr_cwd(pid)
 
 
 _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "OPENCODE_SESSION_ID",
@@ -1014,19 +964,8 @@ _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "
 
 
 def _co_environ(pid: int) -> dict[str, str]:
-    """The variables in ``_co_environ_keys`` from /proc/<pid>/environ. The rest is never kept: it holds secrets."""
-    try:
-        with open(f"/proc/{pid}/environ", "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return {}
-    found: dict[str, str] = {}
-    for item in data.split(b"\0"):
-        key, sep, value = item.partition(b"=")
-        name = key.decode("utf-8", "replace")
-        if sep and name in _co_environ_keys:
-            found[name] = value.decode("utf-8", "replace")
-    return found
+    """The variables in ``_co_environ_keys`` from the process provider. The rest is never kept: it holds secrets."""
+    return _pr_environ(pid, _co_environ_keys)
 
 
 _co_ctx_cache: dict[str, tuple[float, int, int, int, int | None]] = {}   # transcript -> mtime, size, inode, ctime, window
@@ -2185,7 +2124,7 @@ def _co_account_for(family: str, label: str) -> str | None:
 
 
 def _co_current_boot_id() -> str:
-    return _co_read_text("/proc/sys/kernel/random/boot_id").strip()
+    return _pr_boot_id()
 
 
 def _co_absent(value: object) -> bool:
@@ -3979,7 +3918,7 @@ def find_stages(roots: list[str], depth: int = SCAN_DEPTH) -> list[tuple[str, st
         else:
             parent = os.path.basename(os.path.dirname(os.path.dirname(stage)))
             labels[stage] = f"{name} ({parent})" if parent else name
-    for stage in list(labels):   # a stage dir inside another (`<stage>/review/`) is named after its parent: "quota-service (review)"
+    for stage in list(labels):   # a stage dir inside another (`<stage>/review/`) is named after its parent: "billing-api (review)"
         parent = os.path.dirname(stage)
         if parent in labels:
             labels[stage] = f"{labels[parent]} ({os.path.basename(stage)})"
@@ -5052,10 +4991,12 @@ class GlobalCollector:
             _co_native_cache[home] = (mono, tuple(native))
         # Roots constrain discovery only. Ownership is still resolved exclusively from execution IDs,
         # explicit parent links, or exact PID/start identity.
-        allowed = [os.path.normpath(os.path.expanduser(root)) for root in self._co_roots]
+        # both sides resolved: roots arrive resolved, and a stored cwd may still hold a symlink
+        allowed = [os.path.realpath(os.path.expanduser(root)) for root in self._co_roots]
 
         def in_scope(rec: ExecutionRecord) -> bool:
-            cwd = os.path.normpath(os.path.expanduser(rec.cwd)) if rec.cwd else ""
+            raw = os.path.expanduser(rec.cwd) if rec.cwd else ""
+            cwd = os.path.realpath(raw) if os.path.isabs(raw) else ""   # relative: never under a root
             return bool(cwd and any(cwd == root or cwd.startswith(root.rstrip(os.sep) + os.sep) for root in allowed))
 
         # Registry records get the same roots scope as native ones; a record with no cwd, or a non-absolute cwd,
@@ -5498,7 +5439,8 @@ class GlobalCollector:
         """Hide a station until its status files or its lead change. False when the file cannot be written."""
         if not stage_path.startswith("execution:"):   # an execution row is filtered by its own path; its dir would hide nothing
             stage_path = next((s.dir for s in self._co_last_stages if s.path == stage_path and s.dir), stage_path)
-        known_station = any(s.path == stage_path and s.dir for s in self._co_last_stages)
+        # by dir: a station split into session rows (`#<sid>`, `#unlinked`) has no row whose path is the bare dir
+        known_station = any(s.dir == stage_path or (s.path == stage_path and s.dir) for s in self._co_last_stages)
         openclaw_station = any(s.path == stage_path and s.lead_kind == "openclaw" for s in self._co_last_stages)
         if not known_station and not openclaw_station and not stage_path.startswith("execution:"):
             return False

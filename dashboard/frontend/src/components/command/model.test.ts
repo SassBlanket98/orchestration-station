@@ -3,14 +3,14 @@ import type { CommandItem } from "./model";
 import { commandDestination, commandOptionId, matchCommandItems, moveCommandIndex, renderedCommandItems } from "./model";
 
 const items: CommandItem[] = [
-  { id: "run-a", group: "Jump to", label: "quota-service / ram-2026-10-08", detail: "Run · 4 live", status: "active", searchText: "quota-service ram-2026-10-08", to: "/runs/a" },
-  { id: "worker-a-fix", group: "Workers", label: "fix1 · gpt-6-luna", detail: "running", status: "running", searchText: "quota-service ram-2026-10-08 fix1 gpt-6-luna codex", to: "/runs/a/workers/fix1" },
+  { id: "run-a", group: "Jump to", label: "billing-api / ram-2026-10-08", detail: "Run · 4 live", status: "active", searchText: "billing-api ram-2026-10-08", to: "/runs/a" },
+  { id: "worker-a-fix", group: "Workers", label: "fix1 · gpt-6-luna", detail: "running", status: "running", searchText: "billing-api ram-2026-10-08 fix1 gpt-6-luna codex", to: "/runs/a/workers/fix1" },
   { id: "run-b", group: "Jump to", label: "stagewatch / redesign", detail: "Run · 2 live", status: "active", searchText: "stagewatch redesign", to: "/runs/b" },
 ];
 
 describe("command palette model", () => {
   it("matches case-insensitively across terms and ranks closer matches first", () => {
-    expect(matchCommandItems(items, "quota-service gpt-6").map((item) => item.id)).toEqual(["worker-a-fix"]);
+    expect(matchCommandItems(items, "billing-api gpt-6").map((item) => item.id)).toEqual(["worker-a-fix"]);
     expect(matchCommandItems(items, "redesign")[0].id).toBe("run-b");
   });
 

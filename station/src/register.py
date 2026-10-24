@@ -14,6 +14,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from model import ExecutionEvidence, ExecutionRecord
+from procs import _pr_boot_id, _pr_stat
 from registry import (
     MAX_ARTIFACT_BYTES,
     execution_key,
@@ -136,11 +137,10 @@ def write_execution(root: str, data: dict, event: str = "observe") -> ExecutionR
 
 
 def _sr_process_identity(pid: int) -> tuple[int | None, str]:
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
-        return int(raw[19]), Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    except (OSError, ValueError, IndexError):
+    stat = _pr_stat(pid)
+    if stat is None:
         return None, ""
+    return stat[1], _pr_boot_id()
 
 
 def launch_execution(root: str, metadata: dict, command: list[str]) -> int:
@@ -183,14 +183,14 @@ def _caller_process(max_depth: int = 8) -> tuple[int, int, str] | None:
     for _ in range(max_depth):
         if pid <= 1:
             return None
-        try:
-            comm = Path(f"/proc/{pid}/comm").read_text().strip()
-            if comm in HARNESS_PROCESSES:
-                start, boot = _sr_process_identity(pid)
-                return (pid, start, boot) if start is not None else None
-            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
+        stat = _pr_stat(pid)
+        if stat is None:
             return None
+        ppid, _start, comm = stat
+        if comm in HARNESS_PROCESSES:
+            start, boot = _sr_process_identity(pid)
+            return (pid, start, boot) if start is not None else None
+        pid = ppid
     return None
 
 

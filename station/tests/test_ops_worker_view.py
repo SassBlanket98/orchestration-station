@@ -95,7 +95,7 @@ class Layout(unittest.TestCase):
         self.assertIn("WORKER", crumb)
         self.assertIn("running", crumb)
         for part in ("MODEL DeepSeek V4.1 Flash · hi", "ROUTE opencode-go", "MODE ", "PID 4242", "JOB build",
-                     "ELAPSED 12m 40s", "TOOLS 84", "TOKENS 388k", "CTX 82k · 41%", "COST — sub", "FLAGS none",
+                     "ELAPSED 12m 40s", "TOOLS 84", "TOKENS 388k", "CTX 82k of 200k · 41%", "COST — sub", "FLAGS none",
                      "GOAL map the global TUI"):
             self.assertIn(part, shown)
 

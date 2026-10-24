@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from stagewatch import api, auth
+from stagewatch import api
 from stagewatch.config import Config, load_config, load_quota_service_secret
 from stagewatch.contracts import StoreProtocol
 from stagewatch.quota import QuotaClient
@@ -22,11 +22,9 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 def create_app(store: StoreProtocol, cfg: Config) -> FastAPI:
     """The API, plus the built SPA at `/` when `frontend/dist` exists.
 
-    Public (tunnel) requests go through the Google sign-in gate; see `auth.install`.
     `app.state.quota_client` is None when quota_service is not fully configured (offline).
     """
     app = api.create_app(store, cfg)
-    auth.install(app, cfg)
     app.state.quota_client = _quota_client(cfg)
     if (FRONTEND_DIST / "index.html").is_file():
         _mount_spa(app, FRONTEND_DIST)

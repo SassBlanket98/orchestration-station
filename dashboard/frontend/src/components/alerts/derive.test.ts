@@ -14,7 +14,7 @@ const worker = (over: Partial<WorkerPreview> & { name: string }): WorkerPreview 
 });
 
 const session = (over: Partial<SessionSummary> & { id: string }): SessionSummary => ({
-  project: "quota-service", run: null, path: "/tmp", rev: 1, status: "active",
+  project: "billing-api", run: null, path: "/tmp", rev: 1, status: "active",
   counts: { running: 0, finished: 0, exited: 0, unknown: 0 },
   last_activity_at: NOW - 60, latest_milestone: null, findings_total: 0, running_workers: [],
   lead: null, stream: null, cycle_progress: null, source_warnings: [], worker_previews: [],
@@ -52,13 +52,13 @@ describe("deriveAlerts", () => {
     })], NOW);
     expect(alert).toEqual({
       id: "review:s1", kind: "review", sessionId: "s1",
-      text: "quota-service / ram · 3 findings", at: null, href: "/runs/s1/reviews",
+      text: "billing-api / ram · 3 findings", at: null, href: "/runs/s1/reviews",
     });
   });
 
   it("uses the singular for one finding", () => {
     const [alert] = deriveAlerts([session({ id: "s1", findings_total: 1 })], NOW);
-    expect(alert.text).toBe("quota-service · 1 finding");
+    expect(alert.text).toBe("billing-api · 1 finding");
   });
 
   it("derives exited without report using finished_at, and keeps a null finish time", () => {
@@ -130,7 +130,7 @@ describe("ordering", () => {
       "newest · stdin hang",
       "middle · stdin hang",
       "older · idle",
-      "quota-service · 1 finding",
+      "billing-api · 1 finding",
       "unknown · exited, no report",
     ]);
   });

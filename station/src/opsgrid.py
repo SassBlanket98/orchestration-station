@@ -84,6 +84,7 @@ class _og_Cells:
     model: str = ""
     ctx_pct: int | None = None
     ctx_tokens: int | None = None     # the context size itself; the CTX cell shows it, coloured by ctx_pct
+    ctx_limit: int | None = None      # the danger limit ctx_pct is measured against (`_og_ctx_limit`)
     ctx_has_data: bool = False        # raw ctx exists even when window is missing (cell still draws `—`)
     tokens: int | None = None
     cost: float | None = None
@@ -169,7 +170,8 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     if wk.effort:
         effort = _og_effort(wk.effort)
         model = f"{model} · {effort}" if model else effort
-    ctx = _og_pct(log.ctx_tokens, log.ctx_window)
+    ctx_limit = _og_ctx_limit(log.ctx_window, wk.model, log.model)
+    ctx = _og_pct(log.ctx_tokens, ctx_limit)
     tokens = _og_tokens(log.tokens_in, log.tokens_out)
     has_log = bool(log.path or log.steps or log.tool_counts or log.tool_pulses or log.last_ts)
     tools = sum(log.tool_counts.values()) if has_log else None
@@ -177,7 +179,8 @@ def _og_worker_cells(wk: Worker, now: float) -> _og_Cells:
     local = _og_local(wk.family, wk.account, log.harness, wk.model, log.model)
     return _og_Cells(
         tag=wk.level_tag or "WORKER", harn=_og_worker_harness(wk), model=model, ctx_pct=ctx,
-        ctx_tokens=log.ctx_tokens, ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
+        ctx_tokens=log.ctx_tokens, ctx_limit=ctx_limit,
+        ctx_has_data=log.ctx_tokens is not None or bool(log.ctx_window),
         tokens=tokens, cost=log.cost, cost_note="local" if local else "", elapsed=_og_worker_elapsed(wk, now),
         tools=tools, pulses=list(log.tool_pulses), now=step.text if step else "",
         now_age=max(0.0, now - log.last_ts) if step and log.last_ts else None, live=live,
@@ -190,7 +193,8 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     if stage.effort:
         effort = _og_effort(stage.effort)
         model = f"{model} · {effort}" if model else effort
-    pct = _og_pct(stage.lead_ctx, stage.lead_ctx_window)
+    ctx_limit = _og_ctx_limit(stage.lead_ctx_window, stage.lead_model)
+    pct = _og_pct(stage.lead_ctx, ctx_limit)
     name = stage.display_name or stage.session_name or stage.label
     tag = "" if stage.unlinked else stage.level_tag or ("LEAD" if not stage.parent else "SPAWN")
     harn = _og_stage_harness(stage)
@@ -198,7 +202,7 @@ def _og_stage_cells(stage: Stage, now: float) -> _og_Cells:
     stamp, text = stage.doing[-1] if live and stage.doing else (0.0, "")
     local = _og_local(stage.tag, stage.lead_kind, stage.vitals.provider if stage.vitals else "", model, name)
     return _og_Cells(
-        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx,
+        tag=tag, harn=harn, model=model, ctx_pct=pct, ctx_tokens=stage.lead_ctx, ctx_limit=ctx_limit,
         ctx_has_data=stage.lead_ctx is not None or bool(stage.lead_ctx_window),
         tokens=stage.lead_tokens, cost=stage.lead_cost,
         cost_note="local" if local else "", elapsed=_og_stage_elapsed(stage, now),
@@ -388,6 +392,20 @@ def _og_pct(used: int | None, window: int | None) -> int | None:
     return round(used * 100 / window) if used is not None and window else None
 
 
+# Danger limits in tokens (the user 2026-10-25). Haiku's is hard: 100k, with autocompact at 80k. Opus and Sonnet get 300k
+# to be safe. The window caps a limit; any other model is measured against its own window.
+_OG_CTX_LIMITS = (("haiku", 100_000), ("opus", 300_000), ("sonnet", 300_000))
+
+
+def _og_ctx_limit(window: int | None, *models: str | None) -> int | None:
+    """The token count at which this model's context turns red: a fixed limit for Haiku/Opus/Sonnet, else its window."""
+    text = " ".join(str(model or "").lower() for model in models)
+    for key, limit in _OG_CTX_LIMITS:
+        if key in text:
+            return min(limit, window) if window else limit
+    return window or None
+
+
 def _og_tokens(tokens_in: int | None, tokens_out: int | None) -> int | None:
     return None if tokens_in is None and tokens_out is None else (tokens_in or 0) + (tokens_out or 0)
 
@@ -434,11 +452,14 @@ def _og_ctx_cell(tokens: int | None, pct: int | None) -> str:
 
 
 def _og_ctx_text(cells: object) -> str:
-    """`82k · 41%` for the detail views; `82k` without a window, empty when unknown."""
+    """`82k of 300k · 27%` (size, danger limit, share of it) for the detail views; `82k` without a limit."""
     tokens, pct = getattr(cells, "ctx_tokens", None), getattr(cells, "ctx_pct", None)
+    limit = getattr(cells, "ctx_limit", None)
     if tokens is None:
         return "" if pct is None else f"{pct}%"
-    return _wd_fmt_tok(tokens) + ("" if pct is None else f" · {pct}%")
+    if not limit or pct is None:
+        return _wd_fmt_tok(tokens)
+    return f"{_wd_fmt_tok(tokens)} of {_wd_fmt_tok(limit)} · {pct}%"
 
 
 def _og_worker_elapsed(wk: Worker, now: float) -> str:

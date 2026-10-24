@@ -390,7 +390,7 @@ class FullDensity(unittest.TestCase):
         # slice s5-insights: the header's ⚠ count, now-lines, ETA on live rows and the review outcome changed this frame
         # slice ctx-tokens: the header drops the token sum and worker rows show their own window
         # slice d-pages: the footer gained "[L] lead  [C] cost  [F] files"; the only changed row is the footer line
-        # the header names the product and station instead of "workers · workers"
+        # the header now names the batch ("monitor · <station>") instead of "workers · workers"
         # lr-counts: a finished worker with no report reads "finished · no report" and is no longer in the ⚠ count
         self.assertEqual(hashlib.sha256("\n".join(lines).encode()).hexdigest(),
                          "ffd3eb6a3790df07deaf8fc05a5f792acfb5170922e0155fc3a79ac25ffad6c5")

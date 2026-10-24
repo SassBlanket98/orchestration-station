@@ -725,7 +725,7 @@ class PayloadSizeTests(unittest.TestCase):
         gs = synthetic_global(100)
         global_bytes = len(json.dumps(webdata.global_payload(gs)).encode("utf-8"))
         stage_bytes = len(json.dumps(webdata.stage_payload(gs, "/p/0/.stage")).encode("utf-8"))
-        # guards against runaway growth; the measured sizes are in docs/contract-web.md
+        # guards against runaway growth
         self.assertLess(global_bytes, 600_000)
         self.assertLess(stage_bytes, 60_000)
 

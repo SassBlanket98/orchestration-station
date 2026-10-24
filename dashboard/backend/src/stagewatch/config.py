@@ -17,27 +17,10 @@ class ConfigError(ValueError):
     """A configured secret that cannot be used. The message never carries the secret."""
 
 
-class AuthConfig(BaseModel):
-    """Google sign-in for requests that arrive through the Cloudflare tunnel.
-
-    Secrets stay in files, never in this config. A missing secret file fails at startup.
-    """
-
-    google_client_id: str
-    google_client_secret_file: Path
-    session_secret_file: Path
-    allowed_email: str
-    public_base_url: str
-    session_hours: float = 12
-    # Optional JSON file {"username": "scrypt$salt$hash"} for password logins (see auth.py).
-    users_file: Path | None = None
-
-
 class Config(BaseModel):
     port: int = 8744
     scan_interval_s: float = 1.5
     discover_interval_s: float = 15
-    auth: AuthConfig | None = None
     # Loopback origin of the local quota_service daemon. Unset means quota is offline.
     quota_service_url: str | None = None
     # The bearer lives in this file, or in $QUOTA_SERVICE_SECRET instead.

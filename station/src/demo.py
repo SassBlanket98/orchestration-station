@@ -192,10 +192,10 @@ class _dm_Spec:
 _dm_SPECS = (
     _dm_Spec("map-routes", "Map API routes",
              "List every HTTP route in src/api with its handler, middleware and test.",
-             "luna@medium", "codex", _dm_SESSION_START, _dm_SESSION_START + 240, DONE, has_report=True),
+             "model-b", "codex", _dm_SESSION_START, _dm_SESSION_START + 240, DONE, has_report=True),
     _dm_Spec("api-routes", "Move routes to shared auth",
              "Put every src/api route behind the shared auth middleware and keep tests green.",
-             "sonnet-work medium", "claude", _dm_SESSION_START + 300, None, pid=48211),
+             "model-b medium", "claude", _dm_SESSION_START + 300, None, pid=48211),
     _dm_Spec("db-schema", "Add plan_id to accounts",
              "Add accounts.plan_id with a foreign key, an index and a reversible migration.",
              "opencode-go/deepseek-v4.1-flash", "deepseek", _dm_SESSION_START + 420, 20.0, DONE,
@@ -610,7 +610,7 @@ def demo_page_lines(view: str, worker: str = "") -> list[str]:
                 "  Goal: put every src/api route behind the shared auth middleware and keep the tests green.",
                 "  Workers: api-routes (routes), db-schema (migration), ui-cards (usage cards).",
                 "", "quota picks (PROGRESS.md)",
-                "  22:40 pick api-routes -> sonnet-work (medium), 62% headroom",
+                "  22:40 pick api-routes -> model-b (medium), 62% headroom",
                 "  22:42 pick db-schema -> deepseek (high), 91% headroom"]
     if view == "files":
         who = worker or "the selected worker"

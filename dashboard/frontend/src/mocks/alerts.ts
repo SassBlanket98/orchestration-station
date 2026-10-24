@@ -1,7 +1,7 @@
 // Illustrative Attention list for ?mock=1, matching mockups/menus-1440.html.
 import type { AlertItem } from "../components/alerts/derive";
 
-const SESSION_ID = "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9xdW90YS1zZXJ2aWNlLy5zdGFnZS9yYW0tMjAyNi0xMC0wOA";
+const SESSION_ID = "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9iaWxsaW5nLWFwaS8uc3RhZ2UvcmFtLTIwMjYtMTAtMDg";
 
 /** Times are offsets from `nowS`, so the mock keeps reading as "recent" while open. */
 export function alertsMockFixture(nowS: number = Date.now() / 1000): AlertItem[] {

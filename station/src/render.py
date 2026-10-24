@@ -1958,7 +1958,7 @@ def _rd_quota_full(snap: Snapshot, w: int, h: int, now: float) -> list[str]:
     iw, ih = w - 2, h - 2
     title = _rd_title_main("quota", "all windows")
     if not snap.quota_ok:
-        msg = _rd_dim("quota unavailable (quota service not reachable)")
+        msg = _rd_dim("quota unavailable (STATUS_QUOTA_CMD missing or not answering)")
         return _wd_box([""] * max(0, (ih - 1) // 2) + [_wd_center(msg, iw)], w, h, title)
     ww = min(8, max((len(win.name) for a in snap.quota for win in a.windows), default=2))
     bw = min(max(iw - (2 + ww + 1 + 1 + 4 + 2 + 9), 8), 50)
@@ -3744,7 +3744,8 @@ def _rd_g_meta(row: _rd_GRow, w: int, expanded: bool = False, depth: int = 0) ->
 def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
     items: list[tuple[str, str]] = []   # (account text, countdown or "")
     ranked = []
-    for acct in gs.quota:
+    quota = gs.quota if gs.quota_ok else []   # spend chips still show when the quota command is down
+    for acct in quota:
         if not acct.windows:
             continue
         win = _rd_quota_winner(acct)
@@ -3763,13 +3764,13 @@ def _rd_g_quota_line(gs: GlobalSnapshot, w: int, now: float) -> str:
         if not gs.spend_ok.get(pid) or snap is None or not _rd_spend_masthead_chip(snap):
             continue
         items.append((_rd_spend_chip_paint(snap), ""))
-    for acct in gs.quota:
+    for acct in quota:
         if acct.name in spend_shown:
             continue
         if acct.credit is not None and acct.credit.balance is not None:
             items.append((_rd_dim(_wd_clean(acct.name)) + " "
                           + _wd_c(f"${acct.credit.balance:.2f}", _wd_C_RED if acct.credit.low else _wd_C_TEXT, bold=True), ""))
-    if not gs.quota_ok or not items:
+    if not items:
         return _rd_dim("quota offline")
 
     def build(with_ttr: bool, n: int) -> str:

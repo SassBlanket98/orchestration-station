@@ -302,6 +302,11 @@ def _uv_two_up(blocks: list[list[str]], cw: int) -> list[str]:
     return out
 
 
+_UV_NO_SOURCES = "no usage data: no quota or spend command answered"
+_UV_NO_SOURCES_HINT = "set STATUS_QUOTA_CMD, STATUS_OPENROUTER_CMD or STATUS_OPENAI_CMD"
+_UV_QUOTA_DOWN = "quota unavailable (STATUS_QUOTA_CMD missing or not answering)"
+
+
 def _uv_merge_spend(openrouter: SpendSnapshot | None, openrouter_ok: bool,
                     spend: dict[str, SpendSnapshot] | None, spend_ok: dict[str, bool] | None) -> tuple[dict[str, SpendSnapshot], dict[str, bool]]:
     merged: dict[str, SpendSnapshot] = dict(spend or {})
@@ -320,25 +325,30 @@ def usage_lines(quota: list[QuotaAccount], quota_ok: bool, openrouter: SpendSnap
                 spend_ok: dict[str, bool] | None = None) -> tuple[list[str], int, int]:
     """(body lines, 0, number of subscriptions). Every subscription is a block with all its windows; the
     concerns are separate labelled sections: subscriptions, API credits, OpenRouter, no live data."""
-    if not quota_ok:
-        return [_uv_c("quota unavailable (quota service not reachable)", _wd_C_DIM)], 0, 0
     history = history or {}
     spend_map, spend_ok_map = _uv_merge_spend(openrouter, openrouter_ok, spend, spend_ok)
     spend_shown = {pid for pid in SPEND_PROVIDER_ORDER if spend_ok_map.get(pid) and spend_map.get(pid)}
-    live, credit, quiet = _uv_groups(quota, spend_shown)
+    if not quota_ok and not spend_shown:
+        return [_uv_c(_UV_NO_SOURCES, _wd_C_DIM), _uv_c(_UV_NO_SOURCES_HINT, _wd_C_DIM)], 0, 0
+    # Spend comes from its own commands, so a missing or failing quota command only drops the subscription sections.
+    live, credit, quiet = _uv_groups(quota if quota_ok else [], spend_shown)
     nw = max((_wd_width(_wd_clean(a.name)) for a in credit), default=6)
     cw = (iw - 3) // 2 if two_up else iw
     bw = min(max(cw - (4 + 12 + 1 + 4 + 3 + 15 + 18), 10), 44)
     gap = [""] if airy else []
-    lines: list[str] = [_uv_rule("SUBSCRIPTIONS", f"{len(live)} live", iw)] + gap
-    blocks = [_uv_block(a, bw, cw, now, history.get(a.name), spark) for a in live]
-    if two_up:
-        lines += _uv_two_up(blocks, cw)
+    lines: list[str] = []
+    if quota_ok:
+        lines += [_uv_rule("SUBSCRIPTIONS", f"{len(live)} live", iw)] + gap
+        blocks = [_uv_block(a, bw, cw, now, history.get(a.name), spark) for a in live]
+        if two_up:
+            lines += _uv_two_up(blocks, cw)
+        else:
+            for blk in blocks:
+                lines += blk + [""]
+        if not live:
+            lines += [_uv_c("  none reporting", _wd_C_DIM), ""]
     else:
-        for blk in blocks:
-            lines += blk + [""]
-    if not live:
-        lines += [_uv_c("  none reporting", _wd_C_DIM), ""]
+        lines += [_uv_rule("SUBSCRIPTIONS", "unavailable", iw)] + gap + [_uv_c("  " + _UV_QUOTA_DOWN, _wd_C_DIM), ""]
     if credit:
         lines += [_uv_rule("API CREDITS", "", iw)] + gap
         for a in credit:

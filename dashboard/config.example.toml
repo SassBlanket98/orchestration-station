@@ -13,14 +13,3 @@ monitor_url = "http://127.0.0.1:8743"
 # push_vapid_private_key_file = "~/.config/stagewatch/vapid-private.pem"
 # push_subject = "mailto:admin@example.com"
 # push_store_file = "~/.config/stagewatch/push.json"
-
-# Optional sign-in gate, designed for use behind a Cloudflare tunnel. Its public-request check
-# trusts Cf-Connecting-Ip; another reverse proxy can bypass the check unless configured as untrusted.
-# Keep the dashboard on loopback otherwise.
-# [auth]
-# google_client_id = "<id>.apps.googleusercontent.com"
-# google_client_secret_file = "~/.config/stagewatch/google-client-secret"
-# session_secret_file = "~/.config/stagewatch/session-secret"
-# allowed_email = "you@example.com"
-# public_base_url = "https://dashboard.example.com"
-# session_hours = 12

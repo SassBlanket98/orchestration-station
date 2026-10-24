@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import httpx
@@ -11,7 +10,7 @@ from fake_store import FakeStore, make_session, make_worker
 from fastapi.testclient import TestClient
 from test_quota import PICK_BUILD_SAMPLE, USAGE_SAMPLE
 
-from stagewatch import __version__, auth, main
+from stagewatch import __version__, main
 from stagewatch.api import (
     LOG_INDEX_MAX,
     QUOTA_CACHE_S,
@@ -20,7 +19,7 @@ from stagewatch.api import (
     _log_events,
     create_app,
 )
-from stagewatch.config import AuthConfig, Config
+from stagewatch.config import Config
 from stagewatch.models import (
     LogIndexEntry,
     LogSizeSample,
@@ -651,59 +650,3 @@ def test_d_fields_reach_session_worker_and_sse_payloads(tmp_path: Path) -> None:
     _assert_worker_d_fields(streamed["workers"][0])
     assert streamed["pick_records"][0]["job"] == "build"
 
-
-# --------------------------------------------------------------------------- #
-# Public requests stay behind the sign-in gate on every new route
-# --------------------------------------------------------------------------- #
-OWNER = "owner@example.com"
-PUBLIC = {"cf-connecting-ip": "203.0.113.7"}
-BASE = "https://testserver"
-NEW_ROUTES = [
-    "/api/quota/usage",
-    "/api/quota/pick?job=build&slices=2&lead=a&builder=b",
-    "/api/logs",
-    "/api/logs?sid=proj",
-    "/api/monitor",
-    "/api/monitor/stage?path=proj/build",
-]
-
-
-@pytest.fixture
-def public_cfg(tmp_path: Path) -> Config:
-    (tmp_path / "session-secret").write_text("s3ssion-secret-for-tests\n", encoding="utf-8")
-    (tmp_path / "google-secret").write_text("g00gle-secret-for-tests\n", encoding="utf-8")
-    return Config(
-        auth=AuthConfig(
-            google_client_id="client-id.apps.googleusercontent.com",
-            google_client_secret_file=tmp_path / "google-secret",
-            session_secret_file=tmp_path / "session-secret",
-            allowed_email=OWNER.upper(),
-            public_base_url="https://dashboard.example.com",
-        )
-    )
-
-
-@pytest.mark.parametrize("url", NEW_ROUTES)
-def test_new_routes_are_401_for_public_requests_without_a_session(
-    public_cfg: Config, url: str
-) -> None:
-    client = TestClient(main.create_app(FakeStore({}), public_cfg), base_url=BASE)
-    response = client.get(url, headers=PUBLIC)
-    assert response.status_code == 401
-    assert response.json() == {"detail": "sign-in required"}
-
-
-def test_new_routes_are_not_gated_for_local_requests(public_cfg: Config) -> None:
-    client = TestClient(main.create_app(FakeStore({}), public_cfg), base_url=BASE)
-    assert client.get("/api/logs").status_code == 200
-    assert client.get("/api/quota/usage").status_code == 503  # no quota_service configured
-
-
-def test_new_routes_pass_the_gate_with_a_valid_session(public_cfg: Config, tmp_path: Path) -> None:
-    secret = (tmp_path / "session-secret").read_text(encoding="utf-8").strip().encode()
-    client = TestClient(main.create_app(FakeStore({}), public_cfg), base_url=BASE)
-    client.cookies.set(
-        auth.SESSION_COOKIE, auth.sign({"email": OWNER, "exp": time.time() + 3600}, secret)
-    )
-    assert client.get("/api/logs", headers=PUBLIC).status_code == 200
-    assert client.get("/api/quota/usage", headers=PUBLIC).status_code == 503  # offline, not 401

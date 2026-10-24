@@ -569,6 +569,13 @@ class Stations(unittest.TestCase):
         self.assertTrue(self.gc.dismiss(row.path, NOW - 10))
         self.assertEqual(collect.load_dismissed(self.dismissed), {"execution:abc": NOW - 10})
 
+    def test_dismissing_a_split_row_keys_it_by_its_station_dir(self) -> None:
+        # a station split into session rows has no row whose path is the bare dir (regression: x did nothing)
+        row = collect.Stage(path=self.stage + "#unlinked", dir=self.stage, label="x", lead_state="gone")
+        self.gc._co_last_stages = [row]
+        self.assertTrue(self.gc.dismiss(row.path, NOW - 10))
+        self.assertEqual(collect.load_dismissed(self.dismissed), {self.stage: NOW - 10})
+
     def test_dismiss_writes_the_file_read_back_by_the_collector(self) -> None:
         self.snap()
         self.assertTrue(self.gc.dismiss(self.stage, NOW - 10))

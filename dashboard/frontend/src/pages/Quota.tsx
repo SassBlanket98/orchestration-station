@@ -101,8 +101,8 @@ export default function Quota() {
   const [job, setJob] = useState<(typeof JOBS)[number]>("build");
   const [slices, setSlices] = useState(4);
   const usageRequest = useQuotaUsage();
-  const [lead, setLead] = useState("claude-opus-5-5");
-  const [builder, setBuilder] = useState("haiku-work");
+  const [lead, setLead] = useState("");
+  const [builder, setBuilder] = useState("");
   const pickRequest = useQuotaPick(job, slices, lead, builder);
   const usage = mock ? mockQuotaUsage : usageRequest.data;
   const pick = mock ? mockQuotaPicks[job] : pickRequest.data;

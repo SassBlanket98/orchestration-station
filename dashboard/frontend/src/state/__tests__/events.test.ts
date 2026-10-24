@@ -99,10 +99,10 @@ describe("shared /api/events connection", () => {
     expect(FakeEventSource.instances.length).toBe(1);
     expect(FakeEventSource.last().url).not.toContain("session=");
 
-    const unSession = subscribeEvents("quota-service", () => {});
+    const unSession = subscribeEvents("billing-api", () => {});
     expect(FakeEventSource.instances.length).toBe(2);
     expect(FakeEventSource.instances[0].closed).toBe(true);
-    expect(FakeEventSource.last().url).toContain("session=quota-service");
+    expect(FakeEventSource.last().url).toContain("session=billing-api");
 
     unSession();
     // Back to the session-less stream for the remaining consumer.
@@ -113,16 +113,16 @@ describe("shared /api/events connection", () => {
   });
 
   it("stores and clears the session detail on session and session_gone", () => {
-    const un = subscribeEvents("quota-service", () => {});
+    const un = subscribeEvents("billing-api", () => {});
     const es = FakeEventSource.last();
 
-    es.emit("session", JSON.stringify(detail("quota-service", 7)));
+    es.emit("session", JSON.stringify(detail("billing-api", 7)));
     expect(getEventsSnapshot().session?.rev).toBe(7);
     expect(getEventsSnapshot().sessionGoneId).toBeNull();
 
-    es.emit("session_gone", JSON.stringify({ id: "quota-service" }));
+    es.emit("session_gone", JSON.stringify({ id: "billing-api" }));
     expect(getEventsSnapshot().session).toBeNull();
-    expect(getEventsSnapshot().sessionGoneId).toBe("quota-service");
+    expect(getEventsSnapshot().sessionGoneId).toBe("billing-api");
 
     un();
   });

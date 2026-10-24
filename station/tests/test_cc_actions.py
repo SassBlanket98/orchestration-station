@@ -254,6 +254,7 @@ class Actions(unittest.TestCase):
 
     # ── pidfd signalling ─────────────────────────────────────────────────────
 
+    @unittest.skipUnless(hasattr(os, "pidfd_open"), "needs os.pidfd_open (Python 3.13+ on Linux)")
     def test_pidfd_refuses_a_start_time_mismatch(self) -> None:
         """The re-read after pidfd_open: can() refuses a stale Target first, so the helper is exercised directly."""
         child = self.sleep_proc()
@@ -263,8 +264,9 @@ class Actions(unittest.TestCase):
         self.assertEqual(ccactions._cac_pidfd_signal(child.pid, start + 1, signal.SIGTERM), "pid changed")
         self.assertIsNone(child.poll())
 
+    @unittest.skipUnless(hasattr(os, "pidfd_open"), "needs os.pidfd_open (Python 3.13+ on Linux)")
     def test_pidfd_refuses_a_vanished_pid(self) -> None:
-        with mock.patch.object(ccactions.os, "pidfd_open",
+        with mock.patch.object(ccactions.os, "pidfd_open", create=True,
                                side_effect=ProcessLookupError(3, "No such process")):
             self.assertEqual(ccactions._cac_pidfd_signal(999999, None, signal.SIGTERM), "process already gone")
         child = self.sleep_proc()
@@ -285,7 +287,7 @@ class Actions(unittest.TestCase):
     def test_fallback_numeric_signal_without_pidfd(self) -> None:
         child = self.sleep_proc()
         with mock.patch.object(ccactions, "_cac_PIDFD", False), \
-                mock.patch.object(ccactions.os, "pidfd_open", side_effect=AssertionError("pidfd used")):
+                mock.patch.object(ccactions.os, "pidfd_open", create=True, side_effect=AssertionError("pidfd used")):
             self.assertEqual(run("stop", self.target(child.pid)),
                              f"stopped c2-events (SIGTERM, pid {child.pid})")
         self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
@@ -293,7 +295,7 @@ class Actions(unittest.TestCase):
     def test_injected_kill_is_used_even_when_pidfd_exists(self) -> None:
         child = self.sleep_proc()
         sent: list[tuple[int, int]] = []
-        with mock.patch.object(ccactions.os, "pidfd_open", side_effect=AssertionError("pidfd used")):
+        with mock.patch.object(ccactions.os, "pidfd_open", create=True, side_effect=AssertionError("pidfd used")):
             self.assertTrue(run("stop", self.target(child.pid), kill=lambda pid, sig: sent.append((pid, sig))))
         self.assertEqual(sent, [(child.pid, signal.SIGTERM)])
         self.assertIsNone(child.poll())

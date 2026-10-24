@@ -399,7 +399,7 @@ export type MonitorStageResponse = {
   stage: MonitorStageDetail | null;
 };
 
-// quota-service quota proxy (GET /api/quota/usage, GET /api/quota/pick). Units differ from the
+// quota service quota proxy (GET /api/quota/usage, GET /api/quota/pick). Units differ from the
 // rest of this file: generated_at, runs_out_at and resets_at are Unix epoch MILLISECONDS
 // (upstream clock); fetched_at is Unix epoch SECONDS (dashboard clock). Never mix them.
 export type QuotaLimit = {

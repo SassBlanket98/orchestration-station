@@ -24,7 +24,7 @@ ACT_BUCKETS = 60         # activity sparkline buckets
 ACT_BUCKET_S = 5         # seconds per bucket (60 x 5 s = last 5 minutes)
 TOOL_RING_S = 1800       # tool-call ring kept per log: the last 30 minutes, for the TOOLS/MIN sparkline
 TOOL_RING_MAX = 2000     # entries kept in the ring at most
-LEVEL_TAGS = ("LEAD", "SPAWN", "SUB", "WORKER", "CRON")   # hierarchy tag of a row (docs/monitor-ops-spec.md)
+LEVEL_TAGS = ("LEAD", "SPAWN", "SUB", "WORKER", "CRON")   # hierarchy tag of a row
 QUIET_S = 90             # running worker with no output this long -> "quiet"
 STALL_S = 300            # ... this long and cpu < STALL_CPU -> "stalled"
 STALL_CPU = 1.0
@@ -460,7 +460,7 @@ class Stage:
     lead_kind: str = ""                  # "claude", "claude work", "claude bg", "codex", "t3 code", "cursor", "opencode", "lead.json"; "" when gone
     lead_ctx: int | None = None          # the lead's context window now (tokens); None when its transcript is unreadable
     solo: bool = False                   # a lead is running and has delegated nothing this session; true for a station with no stage dir
-    # one Stage is one SESSION row (see docs/streams/monitor-design.md); `path` stays unique per row
+    # one Stage is one SESSION row; `path` stays unique per row
     dir: str = ""                        # the real stage directory the workers live in; "" means `path` itself
     session_id: str = ""                 # the lead session this row stands for; "" for an unlinked group of older workers
     session_name: str = ""               # short name, at most 3 words: lead.json "name", else the harness title cut to 3 words
@@ -605,7 +605,7 @@ class UIState:
     gturn: str = ""                      # openclaw page: run_id of the turn opened to its tool calls; "" = none
     gworker: str = ""                    # worker page ("wk"): the worker name on stage gstage
     gsess: bool = False                  # the worker page was opened from the session page: Esc goes back there
-    # control center (master-detail view, >=120 cols): see docs/monitor-control-center-plan.md
+    # control center (master-detail view, >=120 cols)
     cc: bool = False                     # master-detail view on (the app turns it on in global mode; v flips to the classic tree)
     cc_active: bool = False              # the last frame was drawn by the control center (render sets it; cckeys keys on it)
     cc_focus: str = "table"              # "table" | "pane" | "strip": which part takes arrows and wheel

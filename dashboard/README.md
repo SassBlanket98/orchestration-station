@@ -24,7 +24,6 @@ The available keys are:
 | `port` | `8744` | Dashboard API port on loopback. |
 | `scan_interval_s` | `1.5` | Seconds between session scans. |
 | `discover_interval_s` | `15` | Seconds between searches for new sessions. |
-| `auth` | unset | Optional sign-in configuration. |
 | `quota_service_url` | unset | Loopback URL of the quota service. |
 | `quota_service_secret_file` | unset | File containing the quota service bearer. |
 | `monitor_url` | `http://127.0.0.1:8743` | Loopback station monitor URL; set to `null` to disable. |
@@ -34,7 +33,7 @@ The available keys are:
 
 ## Access
 
-The sign-in gate is designed for use behind a Cloudflare tunnel. Its public-request check trusts the
-`Cf-Connecting-Ip` header: a request without that header is treated as local and skips sign-in.
-There is no setting to change this, so any other reverse proxy in front of the dashboard bypasses the
-gate. Keep the dashboard on loopback unless it is behind the intended Cloudflare tunnel.
+The dashboard has no sign-in of its own. It binds `127.0.0.1` only, so it is reachable from the
+same machine. To use it from another device, put it behind something that authenticates for you:
+an SSH tunnel, a VPN such as Tailscale or WireGuard, or a reverse proxy with authentication
+(Caddy, nginx, or a Cloudflare Access application). Do not bind it to a public interface as is.

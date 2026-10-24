@@ -219,11 +219,41 @@ class ContextColumn(EnvPatch):
         normal, amber, red = widgets._wd_C_SUB, widgets._wd_C_AMBER, widgets._wd_C_RED
         self.assertEqual(widgets._wd_ctx_color(None), normal)
         self.assertEqual(widgets._wd_ctx_color(40), normal)
-        self.assertEqual(widgets._wd_ctx_color(75), amber)
-        self.assertEqual(widgets._wd_ctx_color(92), red)
+        self.assertEqual(widgets._wd_ctx_color(80), amber)
         self.assertEqual(widgets._wd_ctx_color(100), red)
-        self.assertNotIn(widgets._wd_ctx_color(62), (normal, amber))     # the ramp is gradual, not stepped
-        self.assertNotIn(widgets._wd_ctx_color(84), (amber, red))
+        self.assertEqual(widgets._wd_ctx_color(140), red)
+        self.assertNotIn(widgets._wd_ctx_color(65), (normal, amber))     # the ramp is gradual, not stepped
+        self.assertNotIn(widgets._wd_ctx_color(90), (amber, red))
+
+    def test_ctx_limits_follow_the_model(self) -> None:
+        from opsgrid import _og_ctx_limit
+        self.assertEqual(_og_ctx_limit(1_000_000, "claude-haiku-5-5"), 100_000)       # hard: autocompact at 80k
+        self.assertEqual(_og_ctx_limit(None, "Haiku 5.5"), 100_000)
+        self.assertEqual(_og_ctx_limit(1_000_000, "claude-opus-5-5"), 300_000)
+        self.assertEqual(_og_ctx_limit(1_000_000, "sonnet-5.5"), 300_000)
+        self.assertEqual(_og_ctx_limit(200_000, "claude-opus-5-5"), 200_000)          # the window caps a limit
+        self.assertEqual(_og_ctx_limit(272_000, "gpt-6-luna"), 272_000)               # others: their own window
+        self.assertIsNone(_og_ctx_limit(None, "gpt-6-luna"))
+
+    def test_ctx_hits_amber_at_80k_and_red_at_100k_for_haiku(self) -> None:
+        from opsgrid import _og_stage_cells
+        for tokens, role in ((79_000, None), (80_000, "AMBER"), (100_000, "RED")):
+            st = self.gs(tokens).stages[0]
+            st.lead_model, st.lead_ctx_window = "claude-haiku-5-5", 1_000_000
+            cells = _og_stage_cells(st, NOW)
+            self.assertEqual(cells.ctx_limit, 100_000)
+            color = widgets._wd_ctx_color(cells.ctx_pct)
+            if role:
+                self.assertEqual(color, getattr(widgets, f"_wd_C_{role}"))
+            else:
+                self.assertNotIn(color, (widgets._wd_C_AMBER, widgets._wd_C_RED))
+
+    def test_opus_and_sonnet_turn_red_at_300k_even_in_a_1m_window(self) -> None:
+        from opsgrid import _og_stage_cells
+        for model in ("claude-opus-5-5", "sonnet-5.5"):
+            st = self.gs(300_000).stages[0]
+            st.lead_model, st.lead_ctx_window = model, 1_000_000
+            self.assertEqual(widgets._wd_ctx_color(_og_stage_cells(st, NOW).ctx_pct), widgets._wd_C_RED, model)
 
     def test_ctx_cell_is_painted_with_the_ramp_colour(self) -> None:
         for tokens, window, text in ((40_000, 100_000, "40k"), (75_000, 100_000, "75k"), (95_000, 100_000, "95k")):
@@ -232,8 +262,14 @@ class ContextColumn(EnvPatch):
             raw = next(ln for ln in render_global(gs, UIState(), 120, 38, NOW) if text in _wd_SGR_RE.sub("", ln))
             self.assertRegex(raw, rf"\x1b\[{rgb(widgets._wd_ctx_color(tokens * 100 // window))}m\s*{text}")
 
-    def test_ctx_without_a_window_shows_tokens_in_the_normal_colour(self) -> None:
+    def test_ctx_without_a_window_still_uses_the_models_limit(self) -> None:
+        gs = self.gs(240_000)                                                   # sonnet, no window: 240k of 300k = amber
+        raw = next(ln for ln in render_global(gs, UIState(), 120, 38, NOW) if "240k" in _wd_SGR_RE.sub("", ln))
+        self.assertRegex(raw, rf"\x1b\[{rgb(widgets._wd_C_AMBER)}m\s*240k")
+
+    def test_ctx_of_an_unknown_model_without_a_window_is_the_normal_colour(self) -> None:
         gs = self.gs(180_000)
+        gs.stages[0].lead_model = "mystery-model"
         raw = next(ln for ln in render_global(gs, UIState(), 120, 38, NOW) if "180k" in _wd_SGR_RE.sub("", ln))
         self.assertRegex(raw, rf"\x1b\[{rgb(widgets._wd_C_SUB)}m\s*180k")
 

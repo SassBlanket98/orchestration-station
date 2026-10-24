@@ -1,7 +1,7 @@
 [project]
 name = "stagewatch"
 version = "0.1.0"
-description = "Read-only local dashboard over <root>/*.stage worker directories"
+description = "Read-only local dashboard over local .stage worker directories"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [

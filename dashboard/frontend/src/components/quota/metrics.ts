@@ -37,7 +37,7 @@ function validDate(value: number | null, divisor: number): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** quota-service timestamps and generated_at are milliseconds. */
+/** quota service timestamps and generated_at are milliseconds. */
 export function formatUnixMs(value: number | null): string {
   const date = validDate(value, 1);
   return date ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date) : "—";

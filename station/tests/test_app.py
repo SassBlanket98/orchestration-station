@@ -551,5 +551,17 @@ class Pty(unittest.TestCase):
         self.check(out)
 
 
+class ActionsDefaultTests(unittest.TestCase):
+    def test_private_build_has_actions_on_and_read_only_turns_them_off(self) -> None:
+        parse = app._ap_parser().parse_args
+        with unittest.mock.patch.object(app, "_AP_ACTIONS_DEFAULT", True):   # the private build
+            self.assertTrue(app._ap_actions_allowed(parse([])))
+            self.assertFalse(app._ap_actions_allowed(parse(["--read-only"])))
+            self.assertFalse(app._ap_actions_allowed(parse(["--read-only", "--allow-actions"])))
+        with unittest.mock.patch.object(app, "_AP_ACTIONS_DEFAULT", False):   # the public export
+            self.assertFalse(app._ap_actions_allowed(parse([])))
+            self.assertTrue(app._ap_actions_allowed(parse(["--allow-actions"])))
+
+
 if __name__ == "__main__":
     unittest.main()

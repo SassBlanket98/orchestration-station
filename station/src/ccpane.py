@@ -45,7 +45,6 @@ from widgets import (
     _wd_fmt_tok,
     _wd_gauge_bar,
     _wd_pad,
-    _wd_pct_color,
     _wd_trunc,
     _wd_width,
     _wd_wrap,
@@ -112,6 +111,7 @@ class _cpn_Row:
     tokens_total: int | None = None
     ctx: int | None = None
     ctx_window: int | None = None
+    ctx_limit: int | None = None
     cost: float | None = None
     elapsed: str = ""
     cpu: float | None = None
@@ -147,7 +147,7 @@ def _cpn_row(stage: Stage, worker: Worker | None, now: float) -> _cpn_Row:
             goal=stage.goal, outcome=stage.outcome, lead=True,
             brief=list(stage.brief_text), prompt=list(stage.prompt), system_prompt=list(stage.system_prompt),
             calls=list(stage.calls), tokens_total=stage.lead_tokens, ctx=stage.lead_ctx,
-            ctx_window=stage.lead_ctx_window, cost=stage.lead_cost, elapsed=cells.elapsed,
+            ctx_window=stage.lead_ctx_window, ctx_limit=cells.ctx_limit, cost=stage.lead_cost, elapsed=cells.elapsed,
             pulses=[], tool_pulses=list(stage.lead_tool_pulses), doing=list(stage.doing), work=stage.work,
         )
     log = worker.log
@@ -159,7 +159,7 @@ def _cpn_row(stage: Stage, worker: Worker | None, now: float) -> _cpn_Row:
         brief=list(worker.brief_text), prompt=list(worker.prompt), system_prompt=list(worker.system_prompt),
         calls=list(worker.calls), steps=list(log.steps), tool_counts=dict(log.tool_counts),
         tokens_in=log.tokens_in, tokens_out=log.tokens_out, tokens_cache=log.tokens_cache,
-        tokens_total=tokens_total, ctx=log.ctx_tokens, ctx_window=log.ctx_window, cost=log.cost,
+        tokens_total=tokens_total, ctx=log.ctx_tokens, ctx_window=log.ctx_window, ctx_limit=cells.ctx_limit, cost=log.cost,
         elapsed=cells.elapsed, cpu=worker.cpu, rss=worker.rss, pid=worker.pid, errors=log.errors,
         result=list(worker.result_text) or list(worker.summary), failure=worker.failure, flags=worker.flags,
         pulses=list(log.pulses), tool_pulses=list(log.tool_pulses), work=stage.work,
@@ -281,15 +281,16 @@ def _cpn_tokens_body(row: _cpn_Row) -> str:
 
 
 def _cpn_ctx_body(row: _cpn_Row, cols: int) -> str:
-    pct = _og_pct(row.ctx, row.ctx_window)
-    if row.ctx is None and row.ctx_window is None:
+    limit = row.ctx_limit or row.ctx_window
+    pct = _og_pct(row.ctx, limit)
+    if row.ctx is None and limit is None:
         return _cpn_unknown()
-    if row.ctx_window:
+    if limit:
         used = _wd_fmt_tok(row.ctx) if row.ctx is not None else "—"
-        body = _wd_c(f"{used} of {_wd_fmt_tok(row.ctx_window)}", _wd_ctx_color(pct))
+        body = _wd_c(f"{used} of {_wd_fmt_tok(limit)}", _wd_ctx_color(pct))
         if pct is not None:
             width = min(14, max(4, cols - 34))
-            body += " " + _wd_gauge_bar(pct / 100, width, _wd_pct_color(pct))
+            body += " " + _wd_gauge_bar(min(pct, 100) / 100, width, _wd_ctx_color(pct))
         return body
     return _wd_c(f"{_wd_fmt_tok(row.ctx)} (window unknown)", _wd_C_TEXT)
 
@@ -529,7 +530,7 @@ def _cpn_meter_body(label: str, pulses: list[tuple[float, int]], now: float, col
 
 def _cpn_metrics(row: _cpn_Row, cols: int, now: float) -> list[str]:
     if not (row.pulses or row.tool_pulses or _cpn_tokens_text(row) or row.ctx is not None
-            or row.ctx_window is not None):
+            or row.ctx_window is not None or row.ctx_limit is not None):
         return _cpn_empty("no metrics yet: no token, context or event counts recorded", cols)
     labels = ["TOOLS/MIN", "EVENTS/MIN", "CTX", "TOKENS"]
     label_w = _cpn_label_width(labels, cols)

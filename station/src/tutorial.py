@@ -287,7 +287,7 @@ _tu_STEPS: tuple[TutStep, ...] = (
     TutStep("You are set",
             ("That is every screen. Remember w for the station view and ? for the key list. The mouse works too: click a row, double-click to open it, wheel to scroll.",
              "Not in the demo: OpenClaw sessions have a turn-by-turn page, and 5 shows OpenRouter spend when it is set up.",
-             "Run `station --tutorial` any time to come back. docs/monitor-control-center.md has the full key list. Press . to finish.")),
+             "Run `station --tutorial` any time to come back. Press ? for the full key list. Press . to finish.")),
 )
 
 

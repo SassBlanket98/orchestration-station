@@ -121,7 +121,7 @@ class ReconcileTests(unittest.TestCase):
     def test_boot_id_is_read_once_per_reconcile(self):
         procs = {10: (1, 0, 0, 5, 0), 11: (10, 0, 0, 5, 0), 12: (11, 0, 0, 5, 0)}
         registry = [record(f"p{n}", pid=n, pid_start=5, state="running") for n in (10, 11, 12)]
-        with mock.patch.object(collect, "_co_read_text", return_value="boot\n") as read:
+        with mock.patch.object(collect, "_pr_boot_id", return_value="boot") as read:
             merged = self.rows(registry, procs=procs)
         self.assertEqual(read.call_count, 1)
         self.assertEqual({item.record.state for item in merged}, {"running"})
@@ -332,7 +332,7 @@ class ExecutionStageBootIdTests(unittest.TestCase):
                                           linkage="registered", pid=n, pid_start=5, state="running"))
                  for n in (10, 11, 12)]
         items.append(ExecutionEvidence(record("lead", role="lead", pid=9, pid_start=5, state="running")))
-        with mock.patch.object(collect, "_co_read_text", return_value="boot\n") as read:
+        with mock.patch.object(collect, "_pr_boot_id", return_value="boot") as read:
             g._co_execution_stages(items, 500.0, True)
         self.assertEqual(read.call_count, 1)
 
@@ -361,7 +361,7 @@ class ExecutionAgeOutTests(unittest.TestCase):
         g = collect.GlobalCollector([], quota=False)
         self.addCleanup(g.close)
         g._co_proc_table = lambda: procs or {}
-        with mock.patch.object(collect, "_co_read_text", return_value="boot\n"):
+        with mock.patch.object(collect, "_pr_boot_id", return_value="boot"):
             return g._co_execution_stages(items, self.NOW, all_history)
 
     def test_closed_execution_three_days_old_is_dropped_by_the_ops_window(self):

@@ -324,7 +324,7 @@ const sdDetail: SessionDetail = {
 };
 
 // ---------------------------------------------------------------------------
-// quota-service
+// billing-api
 // ---------------------------------------------------------------------------
 
 const twWorkers: Worker[] = [
@@ -480,10 +480,10 @@ const twFindings: Finding[] = [
 ];
 
 const twDetail: SessionDetail = {
-  id: "quota-service",
-  project: "quota-service",
+  id: "billing-api",
+  project: "billing-api",
   run: null,
-  path: "/home/user/Projects/quota-service/.stage",
+  path: "/home/user/Projects/billing-api/.stage",
   rev: 17,
   status: "active",
   counts: { running: 1, finished: 1, exited: 2, unknown: 0 },
@@ -544,7 +544,7 @@ const twDetail: SessionDetail = {
 };
 
 // ---------------------------------------------------------------------------
-// quota-service / ram-2026-10-08 (nested run, one worker per engine)
+// billing-api / ram-2026-10-08 (nested run, one worker per engine)
 // ---------------------------------------------------------------------------
 
 const runWorker = (
@@ -601,10 +601,10 @@ const runWorkers: Worker[] = [
 ];
 
 const runDetail: SessionDetail = {
-  id: "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9xdW90YS1zZXJ2aWNlLy5zdGFnZS9yYW0tMjAyNi0xMC0wOA",
-  project: "quota-service",
+  id: "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9iaWxsaW5nLWFwaS8uc3RhZ2UvcmFtLTIwMjYtMTAtMDg",
+  project: "billing-api",
   run: "ram-2026-10-08",
-  path: "/home/user/Projects/quota-service/.stage/ram-2026-10-08",
+  path: "/home/user/Projects/billing-api/.stage/ram-2026-10-08",
   rev: 9,
   status: "active",
   counts: { running: 2, finished: 2, exited: 0, unknown: 0 },
@@ -643,7 +643,7 @@ const runDetail: SessionDetail = {
 
 const DETAILS: Record<string, SessionDetail> = {
   "stagewatch": sdDetail,
-  "quota-service": twDetail,
+  "billing-api": twDetail,
   [runDetail.id]: runDetail,
 };
 
@@ -717,7 +717,7 @@ Goal: build slice F0 of project plan; section 2 and 3 are binding.
 Goal: a runnable uv project with the section 3 models.
 `;
   }
-  if (sid === "quota-service" && name === "a2") {
+  if (sid === "billing-api" && name === "a2") {
     return `# A2 — picker team retry
 
 Goal: re-run the picker team after the quota route changed.
@@ -744,7 +744,7 @@ models.py matches section 3 field for field.
 tail and logparse cover the edge cases.
 `;
   }
-  if (sid === "quota-service" && name === "a2-team") {
+  if (sid === "billing-api" && name === "a2-team") {
     return `## Summary
 Ranking produced for 18 providers.
 DeepSeek and Luna were within noise.
@@ -841,7 +841,7 @@ const LOGS: Record<string, LogChunk> = {
     truncated: false,
     lines: textP0,
   },
-  "quota-service/a2": {
+  "billing-api/a2": {
     stem: "a2",
     format: "opencode-jsonl",
     size: 534_528,
@@ -849,7 +849,7 @@ const LOGS: Record<string, LogChunk> = {
     truncated: true,
     lines: jsonlA2,
   },
-  "quota-service/a2-team": {
+  "billing-api/a2-team": {
     stem: "a2-team",
     format: "codex-text",
     size: 210_000,
@@ -857,7 +857,7 @@ const LOGS: Record<string, LogChunk> = {
     truncated: false,
     lines: codexA2Team,
   },
-  "quota-service/t2": {
+  "billing-api/t2": {
     stem: "t2",
     format: "empty",
     size: 0,
@@ -865,7 +865,7 @@ const LOGS: Record<string, LogChunk> = {
     truncated: false,
     lines: [],
   },
-  "quota-service/old": {
+  "billing-api/old": {
     stem: "old",
     format: "text",
     size: 3_400,
@@ -888,4 +888,4 @@ export function logFixture(sid: string, stem: string): LogChunk {
   };
 }
 
-export const fixtureSessionIds = ["stagewatch", "quota-service", "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9xdW90YS1zZXJ2aWNlLy5zdGFnZS9yYW0tMjAyNi0xMC0wOA"] as const;
+export const fixtureSessionIds = ["stagewatch", "billing-api", "run:L2hvbWUvdXNlci9Qcm9qZWN0cy9iaWxsaW5nLWFwaS8uc3RhZ2UvcmFtLTIwMjYtMTAtMDg"] as const;

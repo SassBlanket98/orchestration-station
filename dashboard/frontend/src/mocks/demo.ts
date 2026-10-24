@@ -113,7 +113,7 @@ const PLANS: Plan[] = [
     seed: 3,
   },
   {
-    id: "quota-service",
+    id: "billing-api",
     kind: "active",
     rev: 17,
     stream: "picker-team",

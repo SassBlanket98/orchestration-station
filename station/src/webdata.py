@@ -6,8 +6,7 @@ JSON-serialisable envelope the web client renders, and read one worker's files
 for the detail panel. No dataclass, tuple or set leaves these functions; every
 ``None`` maps to JSON ``null``.
 
-The envelope and element shapes are the binding interface in
-``docs/contract-web.md``.
+The envelope and element shapes below are what the Station Dashboard reads.
 """
 from __future__ import annotations
 

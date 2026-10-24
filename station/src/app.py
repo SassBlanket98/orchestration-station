@@ -187,6 +187,8 @@ _AP_TITLE_DELETE = f"\x1b_Ga=d,d=I,i={_rd_TITLE_ID},q=2\x1b\\".encode("ascii")
 _AP_CSI_FINAL = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end", "Z": "btab"}
 _AP_CSI_TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn"}
 _AP_DEFAULT_ROOTS = ("~",)
+# Process actions (stop, kill, resume, spawn, ending sessions, /api/control) need --allow-actions.
+_AP_ACTIONS_DEFAULT = False
 _AP_PAGE_OPEN = {"L": "lead", "C": "cost", "F": "files"}   # station keys that open a page
 
 
@@ -205,10 +207,13 @@ def _ap_global_mode(args: argparse.Namespace, script_dir: str) -> bool:
 
 
 def _ap_roots(args: argparse.Namespace) -> list[str]:
+    """Roots resolved once: process cwds come back resolved (macOS /tmp is /private/tmp), so roots must match."""
     if args.roots:
-        return args.roots
-    env = os.environ.get("STATUS_ROOTS", "")
-    return [x for x in env.split(":") if x] if env else list(_AP_DEFAULT_ROOTS)
+        roots = list(args.roots)
+    else:
+        env = os.environ.get("STATUS_ROOTS", "")
+        roots = [x for x in env.split(os.pathsep) if x] if env else list(_AP_DEFAULT_ROOTS)
+    return [os.path.realpath(os.path.expanduser(x)) for x in roots]
 
 
 def _ap_help_key(ui: UIState, key: str) -> bool:
@@ -1391,11 +1396,18 @@ class _ap_Notifier:
 
     def send(self, summary: str, body: str, urgency: str) -> None:
         if shutil.which("notify-send") is None:
-            return
+            if sys.platform != "darwin" or shutil.which("osascript") is None:
+                return
+            # text goes in as argv, so no AppleScript quoting (non-ASCII and quotes stay intact)
+            argv = ["osascript", "-e", "on run argv", "-e",
+                    "display notification (item 1 of argv) with title (item 2 of argv)",
+                    "-e", "end run", "--", body, summary]   # "--": text starting with - is not an option
+        else:
+            argv = ["notify-send", "-a", "workers", "-u", urgency, summary, body]
         self.procs = [p for p in self.procs if p.poll() is None]  # reap finished ones
         try:
             self.procs.append(subprocess.Popen(
-                ["notify-send", "-a", "workers", "-u", urgency, summary, body],
+                argv,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             ))
         except OSError:
@@ -1894,6 +1906,7 @@ def _ap_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-notify", action="store_true", help="no desktop notifications")
     p.add_argument("--allow-actions", action="store_true",
                    help="enable confirmed process actions (stop, kill, resume, spawn, ending sessions)")
+    p.add_argument("--read-only", action="store_true", help="turn process actions off")
     p.add_argument("--title-test", action="store_true", help="draw the masthead picture once and print the terminal's replies")
     p.add_argument("--version", action="version", version=f"station {_AP_VERSION}")
     p.add_argument("-v", action="store_true", help=argparse.SUPPRESS)
@@ -2057,11 +2070,17 @@ def _ap_tutorial(args: argparse.Namespace) -> int:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _ap_actions_allowed(args: argparse.Namespace) -> bool:
+    """--read-only wins; otherwise --allow-actions or the build's default."""
+    return not getattr(args, "read_only", False) and (bool(getattr(args, "allow_actions", False)) or _AP_ACTIONS_DEFAULT)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _ap_parser().parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    args.allow_actions = _ap_actions_allowed(args)
     script_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
     if args.title_test:
         return _ap_title_test()
@@ -2087,7 +2106,7 @@ def main(argv: list[str] | None = None) -> int:
                     lambda stage, name, since=None: worker_detail(stage, name, since),
                     global_stage,
                     host=args.host, port=args.port,
-                    control_fn=lambda path, action: _ap_control(collector_g, path, action),
+                    control_fn=(lambda path, action: _ap_control(collector_g, path, action)) if args.allow_actions else None,
                 )
             finally:
                 collector_g.close()

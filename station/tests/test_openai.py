@@ -129,6 +129,15 @@ class ChipTests(unittest.TestCase):
         frame = "\n".join(plain(render_global(gs, UIState(), 120, 30, NOW)))
         self.assertIn("openai $12.34 mtd", frame)
 
+    def test_masthead_shows_spend_without_quota(self) -> None:
+        ai_snap = SpendSnapshot(provider=OPENAI_ACCOUNT, month_to_date_usd=12.34, since="2026-10-01",
+                                per_day=[], per_model=[])
+        gs = GlobalSnapshot(now=NOW, stages=[station("/a", "alpha", [Worker("w", DONE)], last=NOW)],
+                            quota_ok=False, spend={OPENAI_ACCOUNT: ai_snap}, spend_ok={OPENAI_ACCOUNT: True})
+        frame = "\n".join(plain(render_global(gs, UIState(), 120, 30, NOW)))
+        self.assertIn("openai $12.34 mtd", frame)
+        self.assertNotIn("quota offline", frame)
+
 
 class ViewTests(unittest.TestCase):
     def test_openai_section(self) -> None:

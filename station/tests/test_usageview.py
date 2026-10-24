@@ -89,7 +89,17 @@ class OrderAndSections(unittest.TestCase):
         self.assertIn("out in 8d", text)
 
     def test_unavailable_quota(self) -> None:
-        self.assertIn("quota unavailable", plain(usage_lines([], False, None, False, 0, 80, NOW)[0]))
+        text = plain(usage_lines([], False, None, False, 0, 80, NOW)[0])
+        self.assertIn("no usage data", text)
+        self.assertIn("STATUS_QUOTA_CMD", text)
+
+    def test_spend_still_shown_when_quota_is_down(self) -> None:
+        # No quota command (the open-source default): the spend block must still render.
+        text = plain(usage_lines(accounts(), False, openrouter(), True, 0, 100, NOW)[0])
+        self.assertIn("today $1.46", text)
+        self.assertIn("quota unavailable", text)
+        self.assertNotIn("claude-work", text)          # stale quota accounts are not drawn
+        self.assertNotIn("API CREDITS", text)
 
     def test_openrouter_today_vs_yesterday(self) -> None:
         text = plain(usage_lines(accounts(), True, openrouter(), True, 0, 100, NOW)[0])

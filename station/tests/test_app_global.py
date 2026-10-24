@@ -62,7 +62,7 @@ class GlobalApp(unittest.TestCase):
                         stream.write("10:00 milestone")
                 self.assertFalse(app._ap_global_mode(args, root), marker)
         with unittest.mock.patch.dict(app.os.environ, {"STATUS_ROOTS": ""}):
-            self.assertEqual(app._ap_roots(args), list(app._AP_DEFAULT_ROOTS))
+            self.assertEqual(app._ap_roots(args), [os.path.realpath(os.path.expanduser("~"))])
             self.assertEqual(app._AP_DEFAULT_ROOTS, ("~",))
 
     def test_station_rows_move_and_clamp(self) -> None:

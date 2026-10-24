@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -62,18 +63,41 @@ def lineage() -> dict[str, object]:
             "parent_harness": _clean(os.environ.get("STATUS_PARENT_HARNESS")), "root_session": root, "depth": depth}
 
 
+def _ps_ppid(pid: int) -> int | None:
+    """Parent pid from `ps`, for systems without /proc (macOS); None on any error."""
+    try:
+        done = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=2, check=False)
+        return int(done.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def ancestors(limit: int = 16) -> list[int]:
     """Pids above this process (parent first), read from /proc, so a reader can link a worker to the worker whose
-    process launched it even after both have exited."""
+    process launched it even after both have exited. Without /proc (macOS), ps supplies the parents instead."""
     out: list[int] = []
     pid = os.getppid()
+    via_ps = False
     while pid > 1 and len(out) < limit:
         out.append(pid)
-        try:
-            with open(f"/proc/{pid}/stat", "rb") as fh:
-                pid = int(fh.read().rsplit(b")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
+        parent: int | None
+        if via_ps:
+            parent = _ps_ppid(pid)
+        else:
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as fh:
+                    parent = int(fh.read().rsplit(b")", 1)[1].split()[1])
+            except FileNotFoundError:
+                if len(out) != 1:
+                    break
+                via_ps = True
+                parent = _ps_ppid(pid)
+            except (OSError, ValueError, IndexError):
+                break
+        if parent is None:
             break
+        pid = parent
     return out
 
 
@@ -100,7 +124,8 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     stage, name = args
-    if not os.path.isdir(stage) or "/" in name or not name:
+    separators = [sep for sep in (os.sep, os.altsep) if sep]
+    if not os.path.isdir(stage) or not name or any(sep in name for sep in separators):
         print(f"worker-session: bad stage dir or worker name: {stage!r} {name!r}", file=sys.stderr)
         return 2
     info = lineage()
