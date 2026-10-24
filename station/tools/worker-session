@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Record which lead session launched a worker: writes <stage>/<name>.session (JSON, atomic).
+
+    worker-session <stage-dir> <worker-name>          write the file
+    worker-session --env <stage-dir> <worker-name>    write it, then print KEY=VALUE lines for the worker's environment
+
+Call it from the lead right before launching the worker, next to writing <name>.pid and <name>.model.
+station reads the file to list a worker only under the session that launched it. Fields the harness does not
+expose stay null (the worker then shows as "session unknown"). No prompts, tokens or env values are stored.
+
+Nested workers: a launcher passes the lineage down in the environment, so a worker that launches workers of its own
+(at any depth) still links to its ancestors even when its harness hides its own session id:
+
+    STATUS_PARENT_SESSION   session id of the lead that launched this process (set by --env)
+    STATUS_PARENT_HARNESS   that lead's harness
+    STATUS_ROOT_SESSION     the top-level orchestrator's session id (kept unchanged all the way down)
+    STATUS_DEPTH            0 for the top-level lead, +1 per launch
+
+In the file, `lead_session` is only ever this process's own id (null when unknown). `parent_session`, `root_session`
+and `depth` come from the inherited variables, so a reader can fall back to the nearest known ancestor.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+
+# harness -> env vars holding the lead's own session / thread id (first one set wins)
+_ID_VARS = {
+    "claude": ("CLAUDE_CODE_SESSION_ID",),
+    "codex": ("CODEX_THREAD_ID", "CODEX_SESSION_ID"),
+    "opencode": ("OPENCODE_SESSION_ID",),
+    "cursor": ("CURSOR_SESSION_ID",),
+}
+_SAFE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_MAX_DEPTH = 32
+
+
+def _clean(value: str | None) -> str | None:
+    """An inherited id is used only if it is a short, plain token, because it is echoed into a launch environment."""
+    return value if value and _SAFE.fullmatch(value) else None
+
+
+def detect() -> tuple[str | None, str | None]:
+    for harness, names in _ID_VARS.items():
+        for name in names:
+            value = _clean(os.environ.get(name))
+            if value:
+                return harness, value
+    return None, None
+
+
+def lineage() -> dict[str, object]:
+    harness, session_id = detect()
+    parent = _clean(os.environ.get("STATUS_PARENT_SESSION"))
+    root = _clean(os.environ.get("STATUS_ROOT_SESSION")) or parent or session_id
+    raw_depth = os.environ.get("STATUS_DEPTH", "")
+    depth = min(int(raw_depth), _MAX_DEPTH) if raw_depth.isdigit() and len(raw_depth) <= 3 else (1 if parent else 0)
+    return {"lead_harness": harness, "lead_session": session_id, "parent_session": parent,
+            "parent_harness": _clean(os.environ.get("STATUS_PARENT_HARNESS")), "root_session": root, "depth": depth}
+
+
+def ancestors(limit: int = 16) -> list[int]:
+    """Pids above this process (parent first), read from /proc, so a reader can link a worker to the worker whose
+    process launched it even after both have exited."""
+    out: list[int] = []
+    pid = os.getppid()
+    while pid > 1 and len(out) < limit:
+        out.append(pid)
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                pid = int(fh.read().rsplit(b")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return out
+
+
+def child_env(info: dict[str, object]) -> dict[str, str]:
+    """What the worker inherits: this lead becomes its parent; an unknown own id passes the inherited parent on."""
+    session = info["lead_session"] or info["parent_session"]
+    out = {"STATUS_DEPTH": str(min(int(info["depth"]) + 1, _MAX_DEPTH))}
+    if session:
+        out["STATUS_PARENT_SESSION"] = str(session)
+    harness = info["lead_harness"] if info["lead_session"] else info["parent_harness"]
+    if harness:
+        out["STATUS_PARENT_HARNESS"] = str(harness)
+    if info["root_session"]:
+        out["STATUS_ROOT_SESSION"] = str(info["root_session"])
+    return out
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    env_mode = args[:1] == ["--env"]
+    if env_mode:
+        args = args[1:]
+    if len(args) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    stage, name = args
+    if not os.path.isdir(stage) or "/" in name or not name:
+        print(f"worker-session: bad stage dir or worker name: {stage!r} {name!r}", file=sys.stderr)
+        return 2
+    info = lineage()
+    config = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    data = {
+        "schema": 2,
+        **info,
+        "lead_pid": int(os.environ["CLAUDE_PID"]) if os.environ.get("CLAUDE_PID", "").isdigit() else None,
+        "account": ("work" if config.rstrip("/").endswith(".claude-alt") else "personal") if info["lead_harness"] == "claude" else None,
+        "ancestors": ancestors(),
+        "launched_at": time.time(),
+    }
+    path = os.path.join(stage, f"{name}.session")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+    if env_mode:
+        # stdout is machine-read by the launcher; the human line goes to stderr
+        for key, value in child_env(info).items():
+            print(f"{key}={value}")
+        print(path if info["lead_session"] else f"{path} (own session id not exposed: recorded as unknown)", file=sys.stderr)
+    else:
+        print(path if info["lead_session"] else f"{path} (no session id exposed by this harness: recorded as unknown)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

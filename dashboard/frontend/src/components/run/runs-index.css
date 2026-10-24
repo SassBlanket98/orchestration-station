@@ -1,0 +1,18 @@
+/* Runs list: one tappable row per run, working first. Same state glyphs as the overview. */
+.runs-index{max-width:960px;margin:0 auto;padding:14px 16px 24px;font:13px/1.5 var(--font-mono);color:var(--text)}
+.runs-title{margin:0 0 10px;color:var(--accent);font:800 18px/1.2 var(--font-mono);letter-spacing:.14em;text-transform:uppercase}
+.runs-title span{margin-left:8px;color:var(--dim);font-size:13px;letter-spacing:0}
+.runs-empty{color:var(--dim)}
+.runs-list{margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
+.runs-row{display:flex;align-items:center;gap:10px;min-height:48px;padding:6px 4px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.runs-row:hover,.runs-row:focus-visible{background:var(--raised);outline:none}
+.runs-glyph{flex:none;width:1.4ch;text-align:center;font-weight:700}
+.runs-glyph.s-working{color:var(--green)}
+.runs-glyph.s-idle{color:var(--muted)}
+.runs-glyph.s-closed{color:var(--dim)}
+.runs-main{display:flex;flex:1 1 auto;flex-direction:column;min-width:0}
+.runs-name{overflow:hidden;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.runs-sub{overflow:hidden;color:var(--dim);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.runs-side{display:flex;flex:none;flex-direction:column;align-items:flex-end;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.runs-row.st-closed{opacity:.6}
+.runs-row.st-idle .runs-name{color:var(--muted)}

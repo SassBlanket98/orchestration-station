@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Full-bleed square for maskable and iOS. The glyph sits inside the central 80% safe zone. -->
+  <rect width="512" height="512" fill="#07090a"/>
+  <path d="M162 393 V145 H258 A92 92 0 0 1 258 329 H162" fill="none" stroke="#6fb3b8" stroke-width="52" stroke-linecap="butt"/>
+</svg>

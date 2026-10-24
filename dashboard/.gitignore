@@ -1,0 +1,9 @@
+.stage/
+node_modules/
+dist/
+__pycache__/
+.venv/
+*.pyc
+.pytest_cache/
+.DS_Store
+AGENTS.md.bak-*

@@ -1,0 +1,515 @@
+/* Shared UI primitives and a few layout helpers. Plain CSS, tokens only. */
+
+/* ------------------------------------------------------------------ AppShell */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.app-shell__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raise);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.app-shell__brand {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.app-shell__brand::before {
+  content: "▶";
+  color: var(--accent-run);
+  margin-right: var(--space-2);
+}
+
+.app-shell__crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.app-shell__crumb-sep {
+  color: var(--text-faint);
+}
+
+.app-shell__spacer {
+  flex: 1 1 auto;
+}
+
+.app-shell__body {
+  flex: 1 1 auto;
+  padding: var(--space-6) var(--space-4);
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ----------------------------------------------------------------- ConnBadge */
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: lowercase;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  transition: color 0.3s ease, border-color 0.3s ease;
+}
+
+.conn-badge__pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 0;
+  background: currentColor;
+}
+
+.conn-badge--live {
+  color: var(--accent-run);
+  border-color: color-mix(in srgb, var(--accent-run) 40%, var(--line));
+}
+
+.conn-badge--connecting {
+  color: var(--accent-find);
+  border-color: color-mix(in srgb, var(--accent-find) 40%, var(--line));
+}
+
+.conn-badge--reconnecting {
+  color: var(--accent-exit);
+  border-color: color-mix(in srgb, var(--accent-exit) 40%, var(--line));
+}
+
+.conn-badge--reconnecting .conn-badge__pip {
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* ---------------------------------------------------------------- StatusDot */
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 0;
+  flex: 0 0 auto;
+  background: var(--text-faint);
+}
+
+.dot--running {
+  background: var(--accent-run);
+}
+.dot--finished {
+  background: var(--accent-done);
+}
+.dot--exited {
+  background: var(--accent-exit);
+}
+.dot--unknown {
+  background: var(--text-faint);
+}
+
+/* -------------------------------------------------------------------- Pulse */
+.pulse {
+  position: relative;
+  display: inline-flex;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  color: var(--accent-run);
+}
+
+.pulse__core {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  background: currentColor;
+}
+
+.pulse__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  border: 2px solid currentColor;
+}
+
+/* --------------------------------------------------------------- ModelBadge */
+.model-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+  white-space: nowrap;
+}
+
+.model-badge--empty {
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px dashed var(--line);
+}
+
+/* ------------------------------------------------------------------ NowLine */
+.now-line {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 1.4em;
+}
+
+.now-line__tool {
+  color: var(--accent-run);
+  margin-right: var(--space-2);
+}
+
+.now-line--empty {
+  color: var(--text-faint);
+}
+
+/* ----------------------------------------------------------------- TimeAgo */
+.time-ago {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.elapsed {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------- Panel */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel__title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.panel__right {
+  margin-left: auto;
+}
+
+.panel__body {
+  padding: var(--space-4);
+}
+
+/* --------------------------------------------------------------- CountPill */
+.count-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px var(--space-2);
+  border-radius: 0;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.count-pill__count {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.count-pill--running {
+  color: var(--accent-run);
+}
+.count-pill--running .count-pill__count {
+  color: var(--accent-run);
+}
+.count-pill--finished {
+  color: var(--accent-done);
+}
+.count-pill--finished .count-pill__count {
+  color: var(--accent-done);
+}
+.count-pill--exited {
+  color: var(--accent-exit);
+}
+.count-pill--exited .count-pill__count {
+  color: var(--accent-exit);
+}
+.count-pill--findings {
+  color: var(--accent-find);
+}
+.count-pill--findings .count-pill__count {
+  color: var(--accent-find);
+}
+
+/* -------------------------------------------------------------- EmptyState */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.empty-state__title {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.empty-state__hint {
+  font-size: 13px;
+  color: var(--text-dim);
+  max-width: 40ch;
+}
+
+/* ---------------------------------------------------------------- FlagChip */
+.flag-chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: lowercase;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.flag-chip[data-flag="stdin_hang"] {
+  color: var(--accent-exit);
+  border-color: color-mix(in srgb, var(--accent-exit) 45%, var(--line));
+}
+.flag-chip[data-flag="empty_report"],
+.flag-chip[data-flag="stale"] {
+  color: var(--accent-find);
+  border-color: color-mix(in srgb, var(--accent-find) 45%, var(--line));
+}
+.flag-chip[data-flag="no_log"],
+.flag-chip[data-flag="empty_log"] {
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------------ Markdown */
+.markdown {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre {
+  margin-bottom: var(--space-3);
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: var(--space-6);
+}
+
+.markdown code {
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.markdown pre {
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.markdown pre code {
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.markdown blockquote {
+  border-left: 2px solid var(--line);
+  padding-left: var(--space-3);
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------- layout helpers */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.faint {
+  color: var(--text-faint);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Lightweight cards used by the placeholder pages. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card__title {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.worker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.worker-row .now-line {
+  flex: 1 1 auto;
+}
+
+/* -------------------------------------------------------------- EngineBadge */
+.engine-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: lowercase;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--engine-color, var(--text-dim)) 45%, transparent);
+  background: color-mix(in srgb, var(--engine-color, var(--text-dim)) 12%, transparent);
+  color: var(--engine-color, var(--text-dim));
+  white-space: nowrap;
+}
+.engine-badge--claude {
+  --engine-color: var(--engine-claude);
+}
+.engine-badge--codex {
+  --engine-color: var(--engine-codex);
+}
+.engine-badge--cursor {
+  --engine-color: var(--engine-cursor);
+}
+.engine-badge--opencode {
+  --engine-color: var(--engine-opencode);
+}
+.engine-badge--unknown {
+  --engine-color: var(--text-faint);
+  border-style: dashed;
+}
+
+/* ------------------------------------------------------------ Page heading */
+.page-title {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Logs placeholder until the logs index exists. */
+.logs-placeholder {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-2);
+  min-height: 50vh;
+  padding: var(--space-6);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+
+.logs-placeholder h1 {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.logs-placeholder p {
+  font-size: 12px;
+  color: var(--dim);
+}

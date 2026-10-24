@@ -1,0 +1,414 @@
+/* Roll-up rows: Monitor's terminal tree drawn in the Board's mono style. Radius 0 throughout. */
+
+.rollup-row {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 13px/1.5 var(--font-mono);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.rollup-row:hover,
+.rollup-row.is-selected {
+  background: var(--raised);
+}
+.rollup-row.is-selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.rollup-row.is-clickable,
+.rollup-row.rollup-stage,
+.rollup-row.rollup-worker,
+.rollup-row.rollup-finished-row,
+.rollup-row.rollup-divider,
+.rollup-row.rollup-closed-count {
+  cursor: pointer;
+}
+
+.rollup-line {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.rollup-prefix {
+  flex: none;
+  white-space: pre;
+  color: var(--line);
+}
+
+.rollup-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.rollup-name.muted {
+  color: var(--muted);
+}
+.rollup-stage .rollup-name {
+  flex: 1 1 auto;
+}
+
+.rollup-tag {
+  flex: none;
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.rollup-tag.sub {
+  color: var(--accent);
+}
+.rollup-tag.violet {
+  color: var(--violet, #a58fd1);
+}
+.rollup-tag.teal {
+  color: var(--teal, #5fb3a8);
+}
+.rollup-tag.dim {
+  color: var(--dim);
+}
+.rollup-tag.amber {
+  color: var(--amber, #d6a441);
+}
+
+.rollup-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: 8px;
+  color: var(--muted);
+}
+.rollup-harness {
+  color: var(--dim);
+}
+.rollup-harness.cc-w {
+  color: var(--accent);
+}
+.rollup-harness.cc-p {
+  color: var(--cu);
+}
+.rollup-harness.cdx {
+  color: var(--cx);
+}
+.rollup-harness.ocode {
+  color: var(--warn);
+}
+.rollup-harness.oclaw {
+  color: var(--green);
+}
+.rollup-harness.cur {
+  color: var(--dim);
+}
+.rollup-model,
+.rollup-elapsed,
+.rollup-tokens {
+  color: var(--dim);
+}
+.rollup-ctx {
+  color: var(--muted);
+}
+.rollup-ctx.warn {
+  color: var(--warn);
+}
+.rollup-ctx.bad {
+  color: var(--bad);
+}
+
+.rollup-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 8px;
+  color: var(--dim);
+}
+
+.rollup-mark {
+  flex: none;
+  margin-right: 6px;
+}
+
+.rollup-now {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--muted);
+}
+
+/* Project heading: the arrow and name are the toggle; the rule flexes; totals stay right-aligned. */
+.rollup-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 60%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rollup-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.rollup-arrow {
+  flex: none;
+  margin-right: 6px;
+  color: var(--dim);
+}
+.rollup-project .rollup-name {
+  font-weight: 400;
+}
+.rollup-project .rollup-name.working {
+  font-weight: 700;
+  color: var(--text);
+}
+.rollup-rule {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--line2);
+}
+.rollup-counts {
+  flex: none;
+  color: var(--muted);
+}
+.rollup-totals {
+  flex: none;
+  display: inline-flex;
+  gap: 8px;
+  margin-left: 12px;
+  color: var(--text);
+}
+
+.rollup-divider,
+.rollup-closed-count,
+.rollup-finished {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rollup-divider {
+  color: var(--dim);
+}
+.rollup-closed-count,
+.rollup-finished {
+  color: var(--muted);
+}
+.rollup-finished-row:hover .rollup-finished {
+  color: var(--text);
+}
+
+/* Narrow screens: drop the detail columns and keep the name and totals on one line, never scrolling sideways. */
+@media (max-width: 560px) {
+  .rollup-tokens,
+  .rollup-harness,
+  .rollup-ctx {
+    display: none;
+  }
+  .rollup-meta {
+    gap: 6px;
+    margin-left: 6px;
+  }
+  .rollup-rule {
+    margin: 0 4px;
+  }
+  .rollup-totals {
+    gap: 6px;
+    margin-left: 8px;
+  }
+}
+
+/* ── State system ────────────────────────────────────────────────────────────────────────────
+   One glyph leads every session: ● working (green, breathing), ◐ needs you (amber), ○ idle, · closed.
+   Idle and closed rows recede so the live ones are what the eye lands on. */
+.rollup-glyph {
+  flex: none;
+  width: 1.4ch;
+  margin-right: 6px;
+  text-align: center;
+  font-weight: 700;
+}
+.rollup-glyph.s-working { color: var(--green); animation: rollup-breathe 2.4s ease-in-out infinite; }
+.rollup-glyph.s-waiting { color: var(--warn); }
+.rollup-glyph.s-idle { color: var(--muted); }
+.rollup-glyph.s-closed { color: var(--text-faint, var(--dim)); }
+@keyframes rollup-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) { .rollup-glyph.s-working { animation: none; } }
+
+.rollup-stage.st-working .rollup-name { color: var(--text); font-weight: 600; }
+.rollup-stage.st-waiting .rollup-name { color: var(--text); font-weight: 600; }
+.rollup-stage.st-idle .rollup-name { color: var(--muted); }
+.rollup-stage.st-idle .rollup-tag,
+.rollup-stage.st-idle .rollup-meta { opacity: 0.7; }
+.rollup-stage.st-closed { opacity: 0.5; }
+.rollup-stage.st-waiting { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.rollup-stage.st-waiting:hover,
+.rollup-stage.st-waiting.is-selected { background: color-mix(in srgb, var(--warn) 12%, var(--raised)); }
+
+.rollup-needs {
+  padding: 0 5px;
+  color: var(--bg);
+  background: var(--warn);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* NOW line: what the session did last, aligned under its name. */
+.rollup-now {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--text-dim, var(--muted));
+}
+.rollup-now-mark { flex: none; margin: 0 6px 0 calc(1.4ch + 6px); color: var(--dim); }
+.rollup-now-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rollup-now-age { flex: none; margin-left: 8px; color: var(--dim); }
+.rollup-now.ask .rollup-now-text { color: var(--warn); }
+
+/* Finished workers as one line of chips: ✓ ok, ✗ failed, ? no report. */
+.rollup-done-row { cursor: default; }
+.rollup-done-label { flex: none; margin: 0 8px 0 calc(1.4ch + 6px); color: var(--dim); font-size: 11px; }
+.rollup-chips { display: flex; flex-wrap: wrap; gap: 2px 6px; min-width: 0; padding: 1px 0; white-space: normal; }
+.rollup-chip {
+  padding: 0 4px;
+  border: 1px solid var(--line2);
+  background: transparent;
+  font: 11px/1.5 var(--font-mono);
+  color: var(--muted);
+  cursor: pointer;
+}
+.rollup-chip:hover { color: var(--text); border-color: var(--muted); }
+.rollup-chip.ok { color: color-mix(in srgb, var(--ok) 75%, var(--muted)); }
+.rollup-chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line2)); }
+.rollup-chip.miss { color: var(--dim); }
+.rollup-worker .rollup-name { color: var(--text); }
+
+/* Projects breathe apart; the heading is the anchor of each block. */
+.rollup-project { margin-top: 10px; padding-top: 2px; }
+.rollup-list > .rollup-project:first-child { margin-top: 0; }
+.rollup-project .rollup-name.working { font-size: 14px; }
+
+/* ── Needs you strip ───────────────────────────────────────────────────────────────────────── */
+.needs-you {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg));
+}
+.needs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 3px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
+  color: var(--warn);
+  font: 700 11px/1.5 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.needs-count { color: var(--text); letter-spacing: 0; }
+.needs-list { margin: 0; padding: 2px 0; list-style: none; max-height: 30vh; overflow-y: auto; }
+.needs-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  font: 13px/1.5 var(--font-mono);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.needs-row:hover, .needs-row:focus-visible { background: color-mix(in srgb, var(--warn) 12%, transparent); outline: none; }
+.needs-glyph { flex: none; color: var(--warn); font-weight: 700; }
+.needs-project { flex: none; color: var(--muted); }
+.needs-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.needs-wait { flex: none; margin-left: auto; color: var(--warn); }
+.needs-act { display: none; }
+
+@media (min-width: 900px) {
+  .needs-row { flex-wrap: nowrap; }
+  .needs-act { display: block; flex: 0 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); order: 3; }
+  .needs-act.ask { color: var(--warn); }
+  .needs-wait { order: 4; margin-left: 12px; }
+}
+@media (max-width: 560px) {
+  .needs-project { display: none; }
+  .needs-row { min-height: 40px; align-items: center; }
+  .rollup-now-age { display: none; }
+}
+.rollup-chip-more{color:var(--dim);font-size:11px;align-self:center}
+.rollup-glyph.s-service { color: var(--teal, #5fb3a8); font-weight: 400; }
+.rollup-stage.st-service .rollup-name { color: var(--muted); }
+.rollup-stage.st-service .rollup-meta { opacity: 0.7; }
+
+/* ── Quick look under a tapped session ────────────────────────────────────────────────────── */
+.rollup-stage.is-expanded { background: var(--raised); }
+.peek {
+  margin: 0 0 6px calc(1.4ch + 6px);
+  padding: 8px 10px 10px;
+  border-left: 1px solid var(--line2);
+  background: color-mix(in srgb, var(--raised) 60%, transparent);
+  font: 12px/1.5 var(--font-mono);
+  color: var(--text);
+  white-space: normal;
+}
+.peek-goal { margin: 0 0 6px; color: var(--text); overflow-wrap: anywhere; }
+.peek-goal.dim, .peek-note { color: var(--dim); }
+.peek-now { margin: 0 0 8px; color: var(--muted); overflow-wrap: anywhere; }
+.peek-now span { margin-right: 8px; color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .1em; }
+.peek-now.ask { color: var(--warn); }
+.peek-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 16px; margin: 0 0 8px; }
+.peek-facts div { display: flex; gap: 8px; min-width: 0; }
+.peek-facts dt { flex: none; color: var(--dim); }
+.peek-facts dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peek-facts dd.warn { color: var(--warn); }
+.peek-facts dd.bad { color: var(--bad); }
+.peek-open {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  font: 600 12px/1 var(--font-mono);
+  color: var(--accent);
+  cursor: pointer;
+}
+.peek-open:hover, .peek-open:focus-visible { background: color-mix(in srgb, var(--accent) 15%, transparent); outline: none; }
+.peek-note { margin: 0; font-size: 11px; }
+
+/* ── Phone density: smaller type, tighter rows, more on screen without feeling cramped ─────── */
+@media (max-width: 560px) {
+  .rollup-row { font-size: 12px; line-height: 1.45; }
+  .rollup-row.rollup-stage, .rollup-row.rollup-worker { padding: 3px 0; }
+  .rollup-tag { font-size: 9px; padding: 0 3px; margin-right: 4px; }
+  .rollup-glyph { margin-right: 4px; }
+  .rollup-project .rollup-name.working { font-size: 13px; }
+  .rollup-project { margin-top: 8px; }
+  .rollup-now { font-size: 11px; }
+  .rollup-chip { font-size: 10px; }
+  .needs-row { font-size: 12px; min-height: 36px; }
+  .peek-facts { grid-template-columns: 1fr 1fr; }
+}
+
+.rollup-kids{color:var(--dim);font-variant-numeric:tabular-nums}

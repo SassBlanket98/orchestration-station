@@ -1,0 +1,2 @@
+{"timestamp": "2026-10-24T10:00:00.000Z", "type": "session_meta", "payload": {"id": "01a0c0de-0000-7000-8000-00000000c1de", "session_id": "01a0c0de-0000-7000-8000-00000000c1de", "timestamp": "2026-10-24T10:00:00.000Z", "cwd": "/home/tester/projects/demo", "originator": "codex_cli_rs", "base_instructions": {"text": "You are codex.\nBe brief.\n"}}}
+{"timestamp": "2026-10-24T10:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "01a0c0de-0000-7000-8000-00000000c1de\nrun the tests\n"}]}}

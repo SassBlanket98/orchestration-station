@@ -1,0 +1,324 @@
+/* Page: masthead and toolbar fixed, the list scrolls inside the remaining height. Radius is 0 everywhere. */
+.plant-page{display:flex;flex-direction:column;gap:8px;min-height:calc(100dvh - var(--shell-h) - var(--phone-nav-h));padding:14px 16px 10px;color:var(--text);font:13px/1.5 var(--font-mono)}
+:where(.plant-page button){font:inherit;color:inherit}
+.plant-page button:focus-visible,.plant-page input:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+
+.plant-masthead{flex-shrink:0}
+.plant-title{margin:0;color:var(--accent);font:800 clamp(30px,4.6vw,60px)/1.05 var(--font-mono);letter-spacing:.16em;white-space:nowrap}
+.plant-caret{display:inline-block;width:.5em;height:.85em;margin-left:.16em;vertical-align:-.05em;background:var(--accent);animation:plant-blink 1.2s ease-in-out infinite}
+.plant-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px 0;min-height:22px;margin-top:6px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.plant-status-full{margin-top:2px}
+.plant-stat{white-space:nowrap}
+.plant-stat+.plant-stat::before{content:"·";margin:0 .7em;color:var(--dim)}
+.plant-stat>span{color:var(--text)}
+.plant-stat.working>span{color:var(--ok)}
+.plant-stat.warn>span{color:var(--warn)}
+.plant-banner{min-width:0;margin-top:2px;overflow:hidden;color:var(--dim);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.plant-banner.working{color:var(--ok);animation:plant-blink 1.2s ease-in-out infinite}
+.plant-banner.offline{color:var(--warn)}
+.plant-stats-toggle{margin-left:12px;padding:0 4px;border:0;background:transparent;color:var(--dim);font-size:11px;cursor:pointer}
+.plant-stats-toggle:hover{color:var(--text)}
+.plant-heartbeat{display:inline-flex;align-items:center;gap:8px;margin-left:auto}
+.plant-beat-dot{display:inline-block;width:6px;height:6px;background:var(--dim)}
+.plant-beat-dot.on{background:var(--accent);animation:plant-beat 1.4s ease-in-out infinite}
+.plant-beat{display:grid;grid-template-columns:repeat(30,5px);column-gap:2px;align-items:end;height:26px}
+.plant-beat i{display:block;width:5px;height:26px;background:var(--accent);opacity:.6;transform-origin:bottom;transition:transform var(--dur) ease}
+.plant-clock{margin-left:16px;color:var(--dim)}
+/* Usage bars: one row per subscription, one line per window. Desktop wraps subscriptions side by side; phone stacks them (see the 560px rule). */
+.plant-usage{display:flex;flex-direction:column;gap:6px;min-height:18px;margin-top:4px;color:var(--muted);font-size:11px}
+.usage-state{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.usage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 20px;min-width:0}
+.usage-sub{min-width:0}
+.usage-sub.stale{opacity:.5}
+.usage-sub-head{display:flex;align-items:baseline;gap:8px;min-width:0}
+.usage-sub-name{overflow:hidden;color:var(--text);font-weight:700;text-overflow:ellipsis;white-space:nowrap}
+.usage-stale{flex-shrink:0;padding:0 4px;border:1px solid var(--line2);color:var(--dim);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
+.usage-window{--tone:var(--ok);display:flex;align-items:center;gap:8px;min-width:0;min-height:18px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.usage-window.tone-warn{--tone:var(--warn)}
+.usage-window.tone-bad{--tone:var(--bad)}
+.usage-win-name{flex:0 0 4ch;overflow:hidden;color:var(--dim);text-overflow:ellipsis}
+.usage-track{position:relative;flex:1 1 auto;min-width:40px;height:8px;background:var(--line)}
+.usage-fill{position:absolute;top:0;bottom:0;left:0;background:var(--tone)}
+.usage-pace{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:var(--text)}
+.usage-pct{flex:0 0 4ch;text-align:right;color:var(--text)}
+.usage-window.tone-warn .usage-pct{color:var(--warn)}
+.usage-window.tone-bad .usage-pct{color:var(--bad)}
+.usage-reset{flex-shrink:0;color:var(--dim)}
+.usage-runs{flex-shrink:0;color:var(--warn)}
+
+.plant-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;flex-shrink:0}
+.plant-chips{display:flex;flex-wrap:wrap;gap:4px}
+.plant-chip{display:inline-flex;align-items:baseline;gap:6px;padding:2px 8px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
+.plant-chip:hover{background:var(--raised)}
+.plant-chip.on{border-color:var(--accent);color:var(--text)}
+.plant-chip span{color:var(--dim);font-variant-numeric:tabular-nums}
+.plant-filter{flex:1 1 200px;max-width:360px;min-width:0;padding:3px 8px;border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;font-size:12px}
+
+.plant-page kbd{font:inherit;color:var(--muted)}
+
+/* List: the only scrolling region. Container queries pick the row layout from the list width. */
+.plant-list{container:plant-list / inline-size;position:relative;flex:1 0 auto;overflow-x:hidden;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.plant-session{position:relative;animation:plant-enter 220ms ease-out}
+/* Narrow default: no sparkline and no lead model. Seven columns: chevron, mark, name, stream, lead, counts, problems. */
+.plant-row{position:relative;display:grid;grid-template-columns:2ch 2ch minmax(10ch,1.6fr) minmax(8ch,1fr) minmax(10ch,1.2fr) auto 3ch;column-gap:12px;align-items:baseline;width:100%;min-width:0;min-height:30px;padding:4px 12px;border:0;background:transparent;text-align:left;line-height:1.6;cursor:pointer}
+.plant-row:hover,.plant-row.is-cursor{background:var(--raised)}
+.plant-row.is-cursor::before,.plant-worker.is-cursor::before{content:"▌";position:absolute;left:0;top:0;color:var(--accent)}
+.plant-chev{display:inline-block;color:var(--dim);transition:transform var(--dur-fast)}
+[aria-expanded=true]>.plant-chev{transform:rotate(90deg)}
+.plant-session-mark{color:var(--dim)}
+.plant-session-mark.working{color:var(--ok);animation:plant-beat 1.4s ease-in-out infinite}
+.plant-name{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden;color:var(--text);font-weight:700;white-space:nowrap}
+.plant-name-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.plant-badge{flex-shrink:0;padding:0 5px;border:1px solid var(--warn);color:var(--warn);font-size:10px;font-weight:600;letter-spacing:.08em;line-height:1.6}
+.plant-stream{overflow:hidden;color:var(--accent);text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.plant-lead{display:flex;gap:8px;min-width:0;overflow:hidden;color:var(--muted);white-space:nowrap}
+.plant-lead{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.plant-model{display:none;min-width:0;overflow:hidden;color:var(--dim);text-overflow:ellipsis}
+/* Matched stage: harness tag, lead model, effort and context replace the lead label. Order of dropping: effort, model, ctx, tag. */
+.plant-short{min-width:0;overflow:hidden;color:var(--dim);font-weight:400;text-overflow:ellipsis;white-space:nowrap}
+.plant-tag{flex-shrink:0;color:var(--muted);font-size:11px;white-space:nowrap}
+.plant-tag.cc-w{color:var(--accent)}
+.plant-tag.cc-p{color:var(--cu)}
+.plant-tag.cdx{color:var(--cx)}
+.plant-tag.ocode{color:var(--warn)}
+.plant-tag.oclaw{color:var(--green)}
+.plant-tag.cur{color:var(--dim)}
+.plant-match-model,.plant-effort{display:none;min-width:0;overflow:hidden;color:var(--dim);text-overflow:ellipsis;white-space:nowrap}
+.plant-ctx{flex-shrink:0;color:var(--muted);white-space:nowrap}
+.plant-ctx.warn{color:var(--warn)}
+.plant-ctx.bad{color:var(--bad)}
+.plant-counts{display:flex;gap:10px;min-width:0;overflow:hidden;color:var(--muted);font-size:11px;white-space:nowrap}
+.plant-count{color:var(--muted)}
+.plant-count.warn{color:var(--warn)}
+.plant-count>span{color:var(--text)}
+.plant-count.warn>span{color:var(--warn)}
+.plant-spark{display:none;overflow:hidden;color:var(--dim);letter-spacing:.04em;white-space:nowrap}
+.plant-spark.working{color:var(--accent)}
+.plant-problems{color:var(--bad);text-align:right;white-space:nowrap}
+.plant-session.idle .plant-row{color:var(--dim)}
+.plant-session.idle .plant-name{color:var(--muted);font-weight:500}
+.plant-session.idle .plant-stream{color:var(--dim)}
+.plant-preview{display:flex;align-items:baseline;gap:8px;min-width:0;padding:0 12px 5px calc(12px + 4ch);color:var(--muted);font-size:12px}
+.plant-preview .plant-now{min-width:0;color:var(--muted)}
+
+/* Folds animate their height with grid rows; hidden content leaves the tab order. */
+.plant-fold{display:grid;grid-template-rows:0fr;transition:grid-template-rows 140ms ease}
+.plant-fold.open{grid-template-rows:1fr}
+.plant-fold-inner{min-height:0;overflow:hidden;visibility:hidden;transition:visibility 140ms}
+.plant-fold.open>.plant-fold-inner{visibility:visible}
+
+/* Narrow default: branch, mark, name, state word folded into the name, and the now line on the next row. */
+.plant-worker{display:grid;grid-template-columns:2ch 1.4ch minmax(0,1fr) 9ch;column-gap:10px;align-items:baseline;position:relative;width:100%;min-width:0;min-height:22px;padding:2px 12px 2px calc(12px + 2ch);border:0;background:transparent;color:var(--muted);font-size:12px;text-align:left;cursor:pointer}
+.plant-worker:hover,.plant-worker.is-cursor{background:var(--raised)}
+.plant-worker.finished{color:var(--dim)}
+.plant-branch{color:var(--line2);white-space:pre}
+.plant-mark{display:inline-block;width:1.4ch;text-align:center}
+.plant-mark.spin{color:var(--ok)}
+.plant-mark.lag{color:var(--warn)}
+.plant-mark.fail{color:var(--bad)}
+.plant-mark.done{color:var(--accent)}
+.plant-mark.none{color:var(--dim)}
+.plant-worker-name{min-width:0;overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}
+.plant-worker.finished .plant-worker-name{color:var(--muted)}
+.plant-worker-state{margin-left:8px;font-size:11px}
+.plant-worker-state.quiet,.plant-worker-state.no-report{color:var(--warn)}
+.plant-worker-state.stalled,.plant-worker-state.failed{color:var(--bad)}
+.plant-worker-model{display:none;min-width:0;overflow:hidden;color:var(--dim);text-overflow:ellipsis;white-space:nowrap}
+.plant-elapsed{color:var(--dim);text-align:right;white-space:nowrap}
+.plant-now{grid-column:2 / -1;min-width:0;overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}
+.plant-worker.finished .plant-now{color:var(--dim)}
+
+.plant-detail-body{display:flex;flex-direction:column;gap:8px;margin:4px 12px 8px calc(12px + 4ch);padding:10px 12px 10px 14px;border-left:1px solid var(--line2);color:var(--muted);font-size:13px}
+.plant-goal{max-width:75ch}
+.plant-goal b,.plant-facts dt{margin-right:8px;color:var(--dim);font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase}
+.plant-flags{display:flex;flex-wrap:wrap;gap:8px;color:var(--warn);font-size:11px}
+.plant-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px 18px;margin:0;font-size:12px}
+.plant-facts dt{margin:0}
+.plant-facts dd{margin:2px 0 0;color:var(--text)}
+.plant-tabs{display:flex;gap:3px;border-bottom:1px solid var(--line)}
+.plant-tabs button{padding:5px 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dim);font-size:12px;cursor:pointer}
+.plant-tabs button[aria-selected=true]{border-color:var(--accent);color:var(--text)}
+.plant-detail-content{max-height:220px;overflow:auto;font-size:12px;line-height:1.65}
+.plant-detail-content ol{margin:0;padding-left:22px}
+.plant-detail-content li span{color:var(--accent)}
+.plant-detail-content pre{margin:0;overflow:auto;font:inherit;white-space:pre-wrap}
+.plant-muted{color:var(--dim)}
+
+/* Background lead: the facts to stop it by hand. The kill command is copied, never run. */
+.plant-lead-block{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.plant-lead-block .plant-facts{width:100%}
+.plant-cwd{overflow-wrap:anywhere}
+.plant-kill{padding:2px 10px;border:1px solid var(--line2);background:transparent;color:var(--text);font-size:12px;cursor:pointer}
+.plant-kill:disabled{color:var(--dim);cursor:default}
+.plant-kill-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.plant-copy-status{font-size:11px;color:var(--dim)}
+
+.plant-more{display:block;width:100%;padding:2px 12px 2px calc(12px + 2ch);border:0;background:transparent;color:var(--dim);font-size:12px;text-align:left;cursor:pointer}
+.plant-more:hover,.plant-more.is-cursor{color:var(--muted);background:var(--raised)}
+/* Task-group fold lines: one line each, so a long label ellipsises instead of pushing the row wide.
+   The coarse-pointer rule below turns .plant-more into a flex box; keep these block so ellipsis applies. */
+.plant-more.plant-group{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plant-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 16px;padding:3px 12px 2px calc(12px + 2ch);color:var(--muted);font-size:12px}
+.plant-milestone{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plant-milestone-all{flex-shrink:0;padding:0 6px;border:1px solid var(--line2);background:transparent;color:var(--dim);font-size:11px;white-space:nowrap;cursor:pointer}
+.plant-milestone-all:hover,.plant-milestone-all.is-cursor{color:var(--text)}
+.plant-milestones{margin:0;padding:2px 12px 4px calc(12px + 2ch);list-style:none;color:var(--muted);font-size:12px;line-height:1.6}
+.plant-milestones li{padding:1px 0;overflow-wrap:anywhere}
+.plant-milestones.plant-muted{color:var(--dim)}
+.plant-reviews{color:var(--dim);white-space:nowrap}
+.plant-reviews .P1{color:var(--bad)}
+.plant-reviews .P2{color:var(--warn)}
+.plant-reviews .P3{color:var(--dim)}
+.plant-open{display:block;width:max-content;max-width:100%;padding:2px 12px 6px calc(12px + 2ch);overflow:hidden;color:var(--accent);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.plant-detail-body>.plant-open{padding:0}
+
+/* Section headings: idle, background and closed. Hide and fold are buttons; keyboard reaches the fold through j/k. */
+.plant-section{position:relative}
+.plant-sec-head{display:flex;align-items:center;gap:12px;margin:12px 12px 0;padding-top:4px;border-top:1px dashed var(--line2);color:var(--dim);font-size:11px}
+.plant-sec{display:inline-flex;align-items:center;gap:6px;min-height:22px;padding:0 6px 0 0;border:0;background:transparent;color:var(--dim);font-size:11px;text-align:left;cursor:pointer}
+.plant-sec:hover,.plant-sec.is-cursor{color:var(--text)}
+.plant-sec-label{color:var(--dim)}
+.plant-sec-hide{margin-left:auto;padding:0 4px;border:0;background:transparent;color:var(--dim);font-size:11px;cursor:pointer}
+.plant-sec-hide:hover{color:var(--text)}
+.plant-more-section{padding-left:12px}
+.plant-note{display:block;width:100%;padding:8px 12px;border:0;background:transparent;color:var(--dim);font-size:11px;text-align:left;cursor:pointer}
+.plant-note:hover{color:var(--text)}
+.plant-quiet{padding:8px 12px;color:var(--muted)}
+.plant-quiet span{margin-left:8px;color:var(--dim)}
+.plant-empty{padding:12px;color:var(--dim)}
+.plant-skeleton{padding:10px 12px}
+.plant-skeleton i{display:block;width:60%;height:12px;margin:10px 0;background:var(--line);animation:plant-skel 1.2s ease-in-out infinite}
+.plant-skeleton i:nth-child(2){width:45%}
+.plant-skeleton i:nth-child(3){width:55%}
+.plant-skeleton .plant-empty{padding:4px 0 0}
+.plant-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Change flashes replay when the keyed element remounts. */
+.plant-flash{animation:plant-flash 600ms ease-out}
+
+.plant-hints{display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;flex-shrink:0;min-height:17px;position:sticky;bottom:0;z-index:2;padding:4px 0;background:var(--bg);color:var(--dim);font-size:10px;white-space:nowrap}
+
+.plant-help-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 70%,transparent)}
+.plant-help{width:min(520px,calc(100vw - 32px));padding:18px 20px;border:1px solid var(--line2);background:var(--surface);color:var(--text)}
+.plant-help h2{margin:0 0 12px;color:var(--dim);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+.plant-help dl{display:grid;gap:6px;margin:0}
+.plant-help dl>div{display:grid;grid-template-columns:minmax(12ch,auto) 1fr;gap:12px}
+.plant-help dt{color:var(--muted)}
+.plant-help dd{margin:0}
+.plant-help-close{margin-top:14px;padding:4px 10px;border:1px solid var(--line2);background:transparent;font-size:12px;cursor:pointer}
+
+/* Wide (list 900px or more): sparkline and lead model show, and the worker row carries its model and time. */
+@container plant-list (min-width:900px){
+  .plant-row{grid-template-columns:2ch 2ch minmax(12ch,2fr) minmax(8ch,1.2fr) minmax(12ch,1.8fr) 22ch 11ch 3ch}
+  .plant-model,.plant-match-model,.plant-effort{display:block}
+  .plant-spark{display:block}
+  .plant-worker{grid-template-columns:2ch 1.4ch minmax(10ch,22ch) minmax(8ch,16ch) 9ch minmax(0,1fr)}
+  .plant-worker-model{display:block}
+  .plant-now{grid-column:auto}
+}
+
+/* Narrow: each session is a header band; its workers nest under a guide line with their branches kept.
+   Name column starts at 8px pad + chev 2ch + gap + mark 2ch + gap = 24px + 4ch; the guide sits under the session mark's centre. */
+@container plant-list (max-width:600px){
+  .plant-session+.plant-session{margin-top:12px}
+  .plant-session .plant-row{grid-template-columns:2ch 2ch minmax(0,1fr) auto 3ch;column-gap:8px;row-gap:2px;min-height:44px;padding:8px;border-top:1px solid color-mix(in srgb,var(--line2) 60%,transparent);background:color-mix(in srgb,var(--raised) 55%,transparent)}
+  .plant-session .plant-row:hover,.plant-session .plant-row.is-cursor{background:color-mix(in srgb,var(--raised) 85%,transparent)}
+  .plant-chev{grid-column:1;grid-row:1}
+  .plant-session-mark{grid-column:2;grid-row:1}
+  .plant-name{grid-column:3;grid-row:1}
+  .plant-counts{grid-column:4;grid-row:1;justify-content:flex-end;gap:6px}
+  .plant-problems{grid-column:5;grid-row:1}
+  .plant-lead{grid-column:3 / -1;grid-row:2;font-size:11px}
+  .plant-session.idle .plant-row[aria-expanded=false] .plant-lead{display:none}
+  .plant-stream,.plant-spark{display:none}
+  .plant-match-model{display:block}
+  .plant-count{font-size:10px}
+  .plant-preview{padding:0 8px 6px calc(12px + 2ch)}
+  .plant-session>.plant-fold>.plant-fold-inner{position:relative;margin-left:calc(12px + 2ch)}
+  .plant-session>.plant-fold>.plant-fold-inner::before{content:"";position:absolute;top:0;bottom:0;left:calc(.5ch - .5px);width:1px;background:var(--line2)}
+  .plant-worker{grid-template-columns:2ch 1.4ch minmax(0,1fr) 8ch;column-gap:6px;padding:2px 8px 2px 0;font-size:12px}
+  .plant-worker:not(.finished) .plant-now{grid-column:3 / -1;font-size:11px}
+  .plant-worker.finished .plant-now{display:none}
+  .plant-detail-body{margin:4px 8px 8px 2ch;padding-inline:10px}
+  .plant-session .plant-more,.plant-session .plant-meta,.plant-session .plant-milestones,.plant-session .plant-open{padding:2px 8px 2px 2ch}
+  .plant-session .plant-open{padding-bottom:6px}
+  .plant-detail-body>.plant-open{padding:0}
+  .plant-worker-state{display:none}
+  .plant-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width:600px){
+  .plant-page{padding:10px 10px 8px}
+  .plant-title{font-size:20px}
+  .plant-heartbeat{margin-left:0}
+  .plant-hints{display:none}
+}
+
+/* Phone (560px and under): usage bars lead, then the stat line and banner. Title is 40% smaller (60% of the desktop clamp) so the bars sit above the fold. */
+@media (max-width:560px){
+  .plant-masthead{display:flex;flex-direction:column}
+  .plant-title{font-size:calc(clamp(30px,4.6vw,60px) * .6)}
+  .plant-usage{order:1;margin-top:0}
+  .plant-status{order:2}
+  .plant-banner{order:3}
+  .plant-status-full{order:4}
+  .usage-grid{grid-template-columns:minmax(0,1fr)}
+  .usage-sub+.usage-sub{margin-top:6px}
+  .usage-window{font-size:12px}
+}
+
+/* Touch: chips, section headings, worker rows and the fold controls get 44px targets, on narrow screens and on touch devices. */
+@media (max-width:600px), (pointer:coarse){
+  .plant-chip,.plant-filter,.plant-stats-toggle,.plant-note{min-height:44px}
+  .plant-chip{align-items:center;padding:0 12px}
+  .plant-sec,.plant-sec-hide,.plant-more,.plant-worker,.plant-open{min-height:44px}
+  .plant-milestone-all{min-height:44px;padding:0 12px}
+  .plant-sec-head{align-items:stretch}
+  .plant-sec{align-items:center;padding:0 12px 0 0}
+  .plant-sec-hide{display:inline-flex;align-items:center;padding:0 12px}
+  .plant-worker{align-items:center}
+  .plant-more{display:flex;align-items:center}
+  .plant-kill{min-height:44px;padding:0 14px}
+}
+
+@keyframes plant-blink{0%,100%{opacity:1}50%{opacity:.15}}
+@keyframes plant-beat{0%,100%{opacity:.35}50%{opacity:1}}
+@keyframes plant-skel{0%,100%{opacity:.35}50%{opacity:.8}}
+@keyframes plant-enter{from{opacity:0}to{opacity:1}}
+@keyframes plant-flash{from{background:color-mix(in srgb,var(--accent) 35%,transparent)}to{background:transparent}}
+
+@media (prefers-reduced-motion:reduce){
+  .plant-page *,.plant-page *::before{animation:none!important;transition:none!important}
+  .plant-caret,.plant-beat-dot.on,.plant-session-mark.working{opacity:1}
+}
+.usage-folded{grid-column:1/-1;order:99;color:var(--dim);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:560px){.usage-window{flex-wrap:wrap;row-gap:0}.usage-window>*{white-space:nowrap}.plant-stats-toggle{margin-left:8px}}
+
+/* Phone header, compact: the first session should show on the first screen.
+   Title shrinks, the banner and the desktop-only stats toggle go, controls stay inline. */
+@media (max-width:560px){
+  .plant-page{gap:6px;padding-top:8px}
+  .plant-title{font-size:16px;letter-spacing:.14em}
+  .plant-banner{display:none}
+  .plant-status{margin-top:2px;min-height:0}
+  .plant-status .plant-stats-toggle{min-height:28px;padding:0 6px}
+  .plant-status .plant-stats-toggle[aria-expanded]:not(.plant-usage-chip){display:none}
+  .plant-filter{min-height:36px;padding:4px 8px}
+  .usage-sub-head{font-size:12px}
+  .usage-window{min-height:16px;line-height:1.35}
+  .usage-sub+.usage-sub{margin-top:3px}
+}
+.plant-reconnect{flex-shrink:0;padding:2px 8px;border:1px dashed var(--warn);color:var(--warn);font-size:11px}
+
+/* Usage chip in the masthead and the modal it opens. */
+.plant-usage-chip.tone-warn{color:var(--warn)}
+.plant-usage-chip.tone-bad{color:var(--bad)}
+.plant-usage-modal{width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
+.plant-usage-modal .plant-usage{margin-top:0;font-size:12px}
+.plant-usage-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}
+.plant-usage-actions a{color:var(--muted);font-size:12px}
+.plant-usage-actions .plant-help-close{margin-top:0}
+@media (max-width:560px){.plant-usage-modal .plant-usage{order:0}}
+.plant-worker-peek{width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
+.plant-worker-peek .peek-name{margin:0 0 6px;color:var(--text);font-weight:700;overflow-wrap:anywhere}
+@media (max-width:560px){.plant-worker-peek .peek-facts{grid-template-columns:1fr}}

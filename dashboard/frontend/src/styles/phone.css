@@ -1,0 +1,205 @@
+/* Phone layout, 390px class widths. Loaded last so these rules win on equal specificity.
+   Everything sits inside the phone breakpoint, so widths above 600px render as before.
+   Muted colours, no gradients or glows; focus outlines stay visible. */
+
+/* Bottom nav: hidden above the breakpoint, shown below it. */
+.phone-nav {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  /* Bottom nav height (one terminal line plus the safe-area inset). Body padding and .phone-nav both read it. */
+  :root {
+    --phone-nav-h: calc(36px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Header: compact bar at the shared shell height. Nav moves to the bottom. Brand, wordmark and Live stay visible;
+     search, bell and settings stay as 32px squares. Budget at 390px: about 370px inside the bar's padding. */
+  .app-shell__bar {
+    gap: 6px;
+    padding: 0 10px !important;
+  }
+
+  .shell-nav {
+    display: none !important;
+  }
+
+  /* Wordmark: 11px with no tracking. It is the only shrinking item, so a long Live label truncates it instead of overflowing. */
+  .app-shell__brand {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 11px;
+    letter-spacing: 0;
+  }
+
+  .shell-actions {
+    flex: none;
+    gap: 4px;
+  }
+
+  .shell-live {
+    flex: none;
+    gap: 5px;
+    font-size: 11px;
+    letter-spacing: 0;
+  }
+
+  /* Search, settings and the bell: icon-only 32px squares. Search hides its text and shortcut only. */
+  .shell-search,
+  .shell-icon {
+    flex: none;
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+  }
+
+  .shell-search {
+    justify-content: center;
+    font-size: 0;
+  }
+
+  .shell-search span,
+  .shell-search kbd {
+    display: none;
+  }
+
+  /* Two-line badge. "ILLUSTRATIVE" is 12 mono characters: 57.6px at 8px (0.6em advance), so the 64px border-box
+     leaves 60px inside the 1px dashed border, enough for the longest word. "DATA" wraps to line two. */
+  .shell-illus {
+    flex: none;
+    max-width: 64px;
+    padding: 2px 1px;
+    font-size: 8px;
+    line-height: 1.15;
+    letter-spacing: 0;
+    white-space: normal;
+    text-align: center;
+  }
+
+  /* Settings menu: fixed under the bar, never wider than the viewport. */
+  .shell-popover {
+    top: var(--shell-h);
+    right: 8px;
+    width: min(240px, calc(100vw - 16px));
+    max-width: calc(100vw - 16px);
+  }
+
+  /* Page content clears the fixed bottom nav. */
+  .app-shell__body {
+    padding-bottom: var(--phone-nav-h) !important;
+  }
+
+  /* One terminal line: the padding-bottom holds the safe-area inset, so the 36px row sits above it. */
+  .phone-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    height: var(--phone-nav-h);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .phone-nav__item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    min-height: 36px;
+    padding: 0 4px;
+    color: var(--dim);
+    font: 400 12px var(--font-mono);
+    text-decoration: none;
+    text-transform: lowercase;
+    white-space: nowrap;
+  }
+
+  .phone-nav__item:hover {
+    color: var(--text);
+  }
+
+  .phone-nav__item[aria-current="page"] {
+    color: var(--text);
+  }
+
+  .phone-nav__item[aria-current="page"]::before {
+    content: "› ";
+    color: var(--accent);
+  }
+
+  .phone-nav__item[aria-disabled="true"] {
+    color: var(--dim);
+  }
+
+  .phone-nav__item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -4px;
+  }
+
+  /* Worker detail: full-screen sheet with 44px controls and a scrolling tab row. */
+  .wm-head {
+    padding: 12px 14px;
+  }
+
+  .wm-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .wm-tabs {
+    padding: 0 6px;
+  }
+
+  .wm-tabs a {
+    min-height: 44px;
+    padding: 0 10px;
+  }
+
+  .wm-body {
+    padding: 14px;
+    overflow-wrap: anywhere;
+  }
+
+  .wm-body pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Run page: 44px tabs, filters and file actions; cycle steps wrap. */
+  .run-tabs a {
+    min-height: 44px;
+  }
+
+  .run-cycle-steps {
+    flex-wrap: wrap;
+  }
+
+  .run-filters button,
+  .run-close {
+    min-height: 44px;
+  }
+
+  .run-file-row button {
+    min-height: 44px;
+  }
+
+  .run-page pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Quota: 44px controls. */
+  .quota-controls select,
+  .quota-controls input,
+  .quota-preview-button {
+    min-height: 44px;
+    height: 44px;
+  }
+}

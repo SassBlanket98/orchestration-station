@@ -1,0 +1,81 @@
+:root {
+  color-scheme: dark;
+  --bg: #07090a;
+  --surface: #0b0e0f;
+  --raised: #111517;
+  --lift: #161b1d;
+  --line: #1e2528;
+  --line2: #2c363a;
+  --text: #edf0f0;
+  --muted: #adb5b7;
+  --dim: #849094;
+  --accent: #6fb3b8;
+  --cx: #7d96b8;
+  --cl: #b98f75;
+  --cw: #b38fa0;
+  --cu: #9d91b8;
+  --oc: #6ea3a2;
+  --engine-claude: var(--cl);
+  --engine-codex: var(--cx);
+  --engine-cursor: var(--cu);
+  --engine-opencode: var(--oc);
+  --ok: #7cbcbe;
+  --green: #8fbf6a;
+  --warn: #d19a3f;
+  --bad: #d0605e;
+  --bg-raise: var(--raised);
+  --panel: var(--surface);
+  --text-dim: var(--muted);
+  --text-faint: var(--dim);
+  --accent-run: var(--ok);
+  --accent-done: var(--accent);
+  --accent-exit: var(--bad);
+  --accent-find: var(--warn);
+  --dur-fast: 180ms;
+  --dur: 220ms;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  --font-ui: Inter, system-ui, sans-serif;
+  --radius: 0px;
+  /* Shell bar and phone bottom-nav heights; pages size against these instead of hardcoding. */
+  --shell-h: 36px;
+  --phone-nav-h: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f3ef;
+  --surface: #fffefa;
+  --raised: #eeede8;
+  --lift: #fffefa;
+  --line: #d9d8d2;
+  --line2: #c6c6bf;
+  --text: #252a2c;
+  --muted: #555e61;
+  --dim: #727d80;
+  --accent: #416d83;
+}
+
+:root[data-theme="system"] {
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --bg: #f4f3ef;
+    --surface: #fffefa;
+    --raised: #eeede8;
+    --lift: #fffefa;
+    --line: #d9d8d2;
+    --line2: #c6c6bf;
+    --text: #252a2c;
+    --muted: #555e61;
+    --dim: #727d80;
+    --accent: #416d83;
+  }
+}

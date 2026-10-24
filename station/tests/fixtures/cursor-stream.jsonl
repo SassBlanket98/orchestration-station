@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/work","session_id":"9b902603-6864-419f-9d56-9add5a949148","model":"Composer 2.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with the single word: ok"}]},"session_id":"9b902603-6864-419f-9d56-9add5a949148"}
+{"type":"thinking","subtype":"delta","text":"The user requested a","session_id":"9b902603-6864-419f-9d56-9add5a949148","timestamp_ms":1791573246431}
+{"type":"thinking","subtype":"delta","text":" single-word reply: ","session_id":"9b902603-6864-419f-9d56-9add5a949148","timestamp_ms":1791573246434}
+{"type":"thinking","subtype":"delta","text":"\"ok\".","session_id":"9b902603-6864-419f-9d56-9add5a949148","timestamp_ms":1791573246434}
+{"type":"thinking","subtype":"completed","session_id":"9b902603-6864-419f-9d56-9add5a949148","timestamp_ms":1791573246757}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"session_id":"9b902603-6864-419f-9d56-9add5a949148"}
+{"type":"result","subtype":"success","duration_ms":6232,"duration_api_ms":6232,"is_error":false,"result":"ok","session_id":"9b902603-6864-419f-9d56-9add5a949148","request_id":"da4a100e-4873-45b9-bb2e-3d18a7fa3bd0","usage":{"inputTokens":9744,"outputTokens":109,"cacheReadTokens":3864,"cacheWriteTokens":0}}

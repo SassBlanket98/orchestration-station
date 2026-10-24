@@ -1,0 +1,7 @@
+{"timestamp": "2026-10-24T10:00:00.000Z", "type": "session_meta", "payload": {"id": "01a0c0de-0000-7000-8000-00000000c1de", "session_id": "01a0c0de-0000-7000-8000-00000000c1de", "timestamp": "2026-10-24T10:00:00.000Z", "cwd": "/home/tester/projects/demo", "originator": "codex_cli_rs", "base_instructions": {"text": "You are codex.\nBe brief.\n"}}}
+this line is not json at all
+[1, 2, 3]
+{"timestamp": "2026-10-24T10:00:01.000Z", "type": "turn_context", "payload": {"model": "gpt-6-sol"}}
+{"timestamp": "2026-10-24T10:00:02.000Z", "type": "response_item", "payload": "not an object"}
+{"timestamp": "2026-10-24T10:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Fix the thing\n"}]}}
+

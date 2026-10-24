@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+# Station: a live view of an orchestrator's workers. Python, standard library only. Generated from src/ by build.py.
+#   <name>.pid            worker PID, written by the launch subshell (its mtime is the launch time)
+#   <name>.log / .txt     worker output (steps, tool counts, tokens and cost are parsed from it)
+#   <name>.model          optional, one line: model and effort (else read from the process or log)
+#   briefs/<name>.md      brief; first "# " line is the title, "Goal: ..." line is the goal
+#   <name>/REPORT.md      finished worker's report; "## Summary" section is shown
+#   PROGRESS.md           lead's milestones, one per line, oldest first, each starting "HH:MM "
+#   review-*.log          review output; "- [P1] title — detail" lines are counted as findings
+# STATUS_TITLE overrides the station name shown next to the heading (default: the parent directory's name).
+#   station            interactive dashboard (run it directly, not under watch)
+#   station --demo     the same with fake workers
+#   station --plain    one plain-text snapshot (also what you get when piped or run by an agent)
+#   station --all      include workers from before the current session
+# Keys: ↑↓/jk select · Enter open (Tab: Live/Brief/Report) · a all history · u quota · m mute · q quit
+# Run from your orchestrator directory, or use --global; --roots DIR... selects scan roots.
+# Tree: → unfold · ← fold · Enter open · e all finished · ↑↓ select · a all history · q quit
