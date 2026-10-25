@@ -192,21 +192,22 @@ function workerNode(stage: MonitorStage, worker: MonitorWorker, depth: number): 
 }
 
 // Live workers as rows, then one line of chips for the finished ones (any stage that is not closed).
-function workerNodes(stage: MonitorStage, depth: number, nowSec: number): RollupNode[] {
+// Inside the open finished fold every stage is finished, so its chips show too.
+function workerNodes(stage: MonitorStage, depth: number, nowSec: number, inFold: boolean): RollupNode[] {
   const workers = stage.workers ?? [];
   const out: RollupNode[] = workers
     .filter(isWorkerLive)
     .sort(byStart)
     .map((worker) => workerNode(stage, worker, depth));
   const done = workers.filter((worker) => !isWorkerLive(worker)).sort(byStart);
-  if (done.length && bucketOf(stage, nowSec) === "working") {
+  if (done.length && (inFold || bucketOf(stage, nowSec) === "working")) {
     out.push({ kind: "done", key: `d:${stage.path}`, depth, stage, workers: done });
   }
   return out;
 }
 
 // Depth-first walk. A hidden stage emits nothing, and its children take its depth, so they stay attached
-// to the nearest visible ancestor level instead of vanishing.
+// to the nearest visible ancestor level instead of vanishing. `inFold` marks the walk over the finished fold.
 function walk(
   stage: MonitorStage,
   depth: number,
@@ -215,17 +216,18 @@ function walk(
   open: Set<string>,
   nowSec: number,
   visited: Set<MonitorStage>,
+  inFold: boolean,
   out: RollupNode[],
 ): void {
   if (visited.has(stage)) return;
   visited.add(stage);
   if (!shown(stage)) {
-    for (const kid of forest.kids.get(stage) ?? []) walk(kid, depth, forest, shown, open, nowSec, visited, out);
+    for (const kid of forest.kids.get(stage) ?? []) walk(kid, depth, forest, shown, open, nowSec, visited, inFold, out);
     return;
   }
   // Children are built first so the row knows how many it has; they show only while the stage is unfolded.
-  const below: RollupNode[] = workerNodes(stage, depth + 1, nowSec);
-  for (const kid of forest.kids.get(stage) ?? []) walk(kid, depth + 1, forest, shown, open, nowSec, visited, below);
+  const below: RollupNode[] = workerNodes(stage, depth + 1, nowSec, inFold);
+  for (const kid of forest.kids.get(stage) ?? []) walk(kid, depth + 1, forest, shown, open, nowSec, visited, inFold, below);
   // Finished workers are one chip row but count one each, so a stage with only finished workers can still be unfolded.
   const kids = below.reduce((n, node) => n + (node.kind === "done" ? node.workers.length : node.kind === "stage" || node.kind === "worker" ? 1 : 0), 0);
   const key = `s:${stage.path}`;
@@ -247,18 +249,23 @@ function projectChildren(group: ProjectGroup, open: Set<string>, showIdle: boole
   const forest = buildForest(group.stages);
   const visited = new Set<MonitorStage>();
   const out: RollupNode[] = [];
-  for (const root of forest.roots) walk(root, 0, forest, shown, open, nowSec, visited, out);
+  for (const root of forest.roots) walk(root, 0, forest, shown, open, nowSec, visited, false, out);
   for (const stage of forest.all) {
-    if (!visited.has(stage) && shown(stage)) walk(stage, 0, forest, shown, open, nowSec, visited, out);
+    if (!visited.has(stage) && shown(stage)) walk(stage, 0, forest, shown, open, nowSec, visited, false, out);
   }
-  // The fold comes first and its closed stages open BELOW it, newest first, so tapping it never
-  // pushes rows above the finger.
+  // The fold comes first and its closed stages open BELOW it, so tapping it never pushes rows above the finger.
   if (closed.length) {
     const lastActivity = closed.reduce((max, stage) => Math.max(max, stage.last_activity), Number.NEGATIVE_INFINITY);
     out.push({ kind: "finished", key: foldKey, depth: 0, n: closed.length, scope: "stages", lastActivity });
     if (foldOpen) {
-      for (const stage of [...closed].sort((a, b) => b.last_activity - a.last_activity)) {
-        out.push({ kind: "stage", key: `s:${stage.path}`, depth: 1, stage, kids: 0 });
+      // The closed stages form their own forest, so a closed child sits under its closed lead. Roots are the
+      // closed stages whose parent is not also closed; they are walked at depth 1, newest first, like live ones.
+      const closedForest = buildForest(closed);
+      const closedVisited = new Set<MonitorStage>();
+      const everything = () => true;
+      for (const root of closedForest.roots) walk(root, 1, closedForest, everything, open, nowSec, closedVisited, true, out);
+      for (const stage of closedForest.all) {
+        if (!closedVisited.has(stage)) walk(stage, 1, closedForest, everything, open, nowSec, closedVisited, true, out);
       }
     }
   }

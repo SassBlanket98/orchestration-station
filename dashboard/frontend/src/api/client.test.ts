@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  apiPaths,
   ApiError,
   fetchLogIndex,
   fetchQuotaPick,
   fetchQuotaUsage,
+  fetchSession,
 } from "./client";
-import type { QuotaUsage } from "./types";
+import type { QuotaUsage, SessionDetail } from "./types";
 
 type Call = { url: string; init: RequestInit | undefined };
 
@@ -151,6 +153,39 @@ describe("log index", () => {
   });
 });
 
+describe("session detail", () => {
+  const DETAIL = { id: "s1" } as unknown as SessionDetail;
+
+  it("requests the session by id with no query when no lead is given", async () => {
+    const calls = stubFetch(json(200, DETAIL));
+
+    await expect(fetchSession("s1")).resolves.toEqual(DETAIL);
+    expect(calls[0].url).toBe("/api/sessions/s1");
+  });
+
+  it("sends the lead session as lead_session on the request URL", async () => {
+    const calls = stubFetch(json(200, DETAIL));
+
+    await fetchSession("s1", undefined, "lead-1");
+    expect(calls[0].url).toBe("/api/sessions/s1?lead_session=lead-1");
+  });
+
+  it("encodes the session id and the lead session id", async () => {
+    const calls = stubFetch(json(200, DETAIL));
+
+    await fetchSession("a/b", undefined, "x y&z");
+    const url = new URL(calls[0].url, "http://localhost");
+    expect(url.pathname).toBe("/api/sessions/a%2Fb");
+    expect(url.searchParams.get("lead_session")).toBe("x y&z");
+  });
+
+  it("still returns null for an unknown session", async () => {
+    stubFetch(json(404, { detail: "gone" }));
+
+    await expect(fetchSession("s1", undefined, "lead-1")).resolves.toBeNull();
+  });
+});
+
 describe("browser requests carry no credentials", () => {
   it("never sends an authorization header", async () => {
     const calls = stubFetch(json(200, { entries: [], truncated: false }));
@@ -166,5 +201,13 @@ describe("browser requests carry no credentials", () => {
       expect(call.url.startsWith("/api/")).toBe(true);
       expect(call.url).not.toMatch(/token|secret|bearer/i);
     }
+  });
+});
+
+describe("events path", () => {
+  it("adds lead_session only for a session stream", () => {
+    expect(apiPaths.events()).toBe("/api/events");
+    expect(apiPaths.events("s1")).toBe("/api/events?session=s1");
+    expect(apiPaths.events("s1", "a b")).toBe("/api/events?session=s1&lead_session=a%20b");
   });
 });

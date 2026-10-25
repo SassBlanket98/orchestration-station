@@ -41,7 +41,7 @@ export function BoardMasthead({ projects, workers, working, idle, quota, quotaLo
     </div>
     {banner && <div className={`plant-banner ${banner.kind}`}>{banner.text}</div>}
     {statsOpen && <div className="plant-status plant-status-full">
-      <span className="plant-stat"><Flash value={workers}>{formatCount(workers)}</Flash> Workers</span>
+      <span className="plant-stat"><Flash value={workers}>{formatCount(workers)}</Flash> live workers</span>
       <Heartbeat cells={heartbeat(activitySeries)} working={working > 0} />
       <span className="plant-clock"><Clock /></span>
     </div>}

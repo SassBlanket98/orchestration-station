@@ -50,8 +50,9 @@ class ActivityFeed:
     def __init__(self, home: Path | None = None) -> None:
         self.home = (home or Path.home()).resolve()
         self._path_cache: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
-        self._codex_index: tuple[float, dict[str, Path]] = (0.0, {})
-        self._response_cache: tuple[float, dict[str, dict[str, Any]]] = (0.0, {})
+        # -inf, not 0.0: monotonic() can be under 60 s on a freshly booted machine (a CI runner).
+        self._codex_index: tuple[float, dict[str, Path]] = (float("-inf"), {})
+        self._response_cache: tuple[float, dict[str, dict[str, Any]]] = (float("-inf"), {})
 
     def get(self, stages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         now = time.monotonic()

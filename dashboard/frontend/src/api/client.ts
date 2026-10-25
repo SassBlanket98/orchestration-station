@@ -84,14 +84,19 @@ export function fetchSessions(signal?: AbortSignal): Promise<SessionsResponse> {
   return getJson<SessionsResponse>("/sessions", signal);
 }
 
-/** Returns `null` when the session is unknown (HTTP 404). */
+/**
+ * Returns `null` when the session is unknown (HTTP 404).
+ * `leadSession` names the lead the overview opened this run from; it is sent as `lead_session` when present.
+ */
 export async function fetchSession(
   sid: string,
   signal?: AbortSignal,
+  leadSession: string | null = null,
 ): Promise<SessionDetail | null> {
+  const query = leadSession ? `?${new URLSearchParams({ lead_session: leadSession })}` : "";
   try {
     return await getJson<SessionDetail>(
-      `/sessions/${encodeURIComponent(sid)}`,
+      `/sessions/${encodeURIComponent(sid)}${query}`,
       signal,
     );
   } catch (err) {
@@ -105,10 +110,12 @@ export async function fetchWorkerDetail(
   sid: string,
   name: string,
   signal?: AbortSignal,
+  leadSession: string | null = null,
 ): Promise<WorkerDetail | null> {
+  const query = leadSession ? `?lead_session=${encodeURIComponent(leadSession)}` : "";
   try {
     return await getJson<WorkerDetail>(
-      `/sessions/${encodeURIComponent(sid)}/workers/${encodeURIComponent(name)}`,
+      `/sessions/${encodeURIComponent(sid)}/workers/${encodeURIComponent(name)}${query}`,
       signal,
     );
   } catch (err) {
@@ -210,6 +217,9 @@ export const apiPaths = {
     `/api/sessions/${encodeURIComponent(sid)}/logs/${encodeURIComponent(stem)}?tail_kb=${tailKb}`,
   logStream: (sid: string, stem: string, tailKb = 64) =>
     `/api/sessions/${encodeURIComponent(sid)}/logs/${encodeURIComponent(stem)}/stream?tail_kb=${tailKb}`,
-  events: (sid?: string) =>
-    sid ? `/api/events?session=${encodeURIComponent(sid)}` : "/api/events",
+  events: (sid?: string, leadSession?: string) =>
+    sid
+      ? `/api/events?session=${encodeURIComponent(sid)}` +
+        (leadSession ? `&lead_session=${encodeURIComponent(leadSession)}` : "")
+      : "/api/events",
 } as const;

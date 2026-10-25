@@ -274,3 +274,78 @@ describe("closed stages in a project", () => {
     expect(nodes.at(-1)).toMatchObject({ kind: "finished", key: "pf:P", n: 1 });
   });
 });
+
+describe("the finished fold as a forest", () => {
+  const live = stage("live", { project: "P", section: "active", last_activity: 1_990 });
+
+  it("nests a closed child under its closed lead at depth 2 when both are opened", () => {
+    const stages = [
+      live,
+      stage("lead", { project: "P", section: "closed", session_id: "L", last_activity: 100 }),
+      stage("child", { project: "P", section: "closed", session_id: "C", parent_session: "L", last_activity: 200 }),
+    ];
+    const folded = buildRollup(stages, opts({ open: new Set(["pf:P"]) }));
+    expect(stageDepths(folded)).toEqual({ live: 0, lead: 1 });
+    expect(folded.find((n) => n.kind === "stage" && n.stage.path === "lead")).toMatchObject({ kids: 1 });
+
+    const leadOpen = buildRollup(stages, opts({ open: new Set(["pf:P", "s:lead"]) }));
+    expect(stageDepths(leadOpen)).toEqual({ live: 0, lead: 1, child: 2 });
+    expect(leadOpen.at(-1)).toMatchObject({ kind: "stage", key: "s:child", depth: 2, kids: 0 });
+  });
+
+  it("shows a closed stage's finished workers as one done row once that stage is unfolded", () => {
+    const stages = [
+      live,
+      stage("old", { project: "P", section: "closed", last_activity: 100, workers: [worker("a"), worker("b", { state: "failed" })] }),
+    ];
+    const fold = buildRollup(stages, opts({ open: new Set(["pf:P"]) }));
+    expect(fold.some((n) => n.kind === "done")).toBe(false);
+    expect(fold.find((n) => n.kind === "stage" && n.stage.path === "old")).toMatchObject({ kids: 2 });
+
+    const open = buildRollup(stages, opts({ open: new Set(["pf:P", "s:old"]) }));
+    // The chips sit under their stage, one level below it (the stage is at depth 1).
+    expect(open.find((n) => n.kind === "done")).toMatchObject({ key: "d:old", depth: 2 });
+    const done = open.find((n) => n.kind === "done");
+    expect(done && done.kind === "done" ? done.workers.map((w) => w.name) : []).toEqual(["a", "b"]);
+  });
+
+  it("lists closed roots newest first, keeps children under them, and keeps the fold count", () => {
+    const stages = [
+      live,
+      stage("older", { project: "P", section: "closed", session_id: "o", last_activity: 100 }),
+      stage("newer", { project: "P", section: "closed", session_id: "n", last_activity: 500 }),
+      stage("newer-kid", { project: "P", section: "closed", session_id: "k", parent_session: "n", last_activity: 50 }),
+    ];
+    const nodes = buildRollup(stages, opts({ open: new Set(["pf:P", "s:newer", "s:older"]) }));
+    expect(nodes.filter((n) => n.kind === "stage").map((n) => n.key)).toEqual(["s:live", "s:newer", "s:newer-kid", "s:older"]);
+    expect(stageDepths(nodes)).toEqual({ live: 0, newer: 1, "newer-kid": 2, older: 1 });
+    expect(nodes.find((n) => n.kind === "finished")).toMatchObject({ key: "pf:P", n: 3 });
+  });
+
+  it("treats a closed child of a working lead as a root of the fold", () => {
+    const stages = [
+      stage("lead", { project: "P", section: "active", session_id: "L", last_activity: 1_990 }),
+      stage("kid", { project: "P", section: "closed", session_id: "K", parent_session: "L", last_activity: 100 }),
+    ];
+    const nodes = buildRollup(stages, opts({ open: new Set(["pf:P", "s:lead"]) }));
+    expect(stageDepths(nodes)).toEqual({ lead: 0, kid: 1 });
+  });
+
+  it("keeps closed stages in a parent cycle inside the fold", () => {
+    const stages = [
+      live,
+      stage("a", { project: "P", section: "closed", session_id: "a", parent_session: "b" }),
+      stage("b", { project: "P", section: "closed", session_id: "b", parent_session: "a" }),
+    ];
+    const nodes = buildRollup(stages, opts({ open: new Set(["pf:P", "s:a", "s:b"]) }));
+    expect(stageDepths(nodes)).toEqual({ live: 0, a: 1, b: 2 });
+  });
+
+  it("keeps finished chips off idle stages outside the fold", () => {
+    const nodes = buildRollup([
+      stage("idle", { project: "P", section: "idle", last_activity: 1_990, workers: [worker("a")] }),
+    ], opts({ showIdle: true, open: new Set(["p:P", "s:idle"]) }));
+    expect(nodes.some((n) => n.kind === "stage")).toBe(true);
+    expect(nodes.some((n) => n.kind === "done")).toBe(false);
+  });
+});

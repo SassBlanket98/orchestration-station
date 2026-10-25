@@ -198,7 +198,7 @@ const EMPTY_SNAPSHOT: EventsSnapshot = {
   loaded: false,
 };
 
-type EventsListener = { sessionId: string | null; notify: () => void };
+type EventsListener = { sessionId: string | null; leadSession: string | null; notify: () => void };
 
 let snapshot: EventsSnapshot = EMPTY_SNAPSHOT;
 let connection: SseConnection | null = null;
@@ -242,12 +242,15 @@ function onSessionGoneEvent(data: string): void {
   emit({ ...snapshot, session: null, sessionGoneId: payload.id });
 }
 
-function desiredKey(): string | null {
-  let key: string | null = null;
+// The session page's stream, optionally scoped to one lead session's workers.
+type StreamWant = { sessionId: string; leadSession: string | null };
+
+function desiredWant(): StreamWant | null {
+  let want: StreamWant | null = null;
   for (const listener of listeners) {
-    if (listener.sessionId !== null) key = listener.sessionId;
+    if (listener.sessionId !== null) want = { sessionId: listener.sessionId, leadSession: listener.leadSession };
   }
-  return key;
+  return want;
 }
 
 function teardownConnection(): void {
@@ -264,12 +267,13 @@ function ensureConnection(): void {
     }
     return;
   }
-  const key = desiredKey();
+  const want = desiredWant();
+  const key = want === null ? null : `${want.sessionId}|${want.leadSession ?? ""}`;
   if (connection !== null && connectionKey === key) return;
   teardownConnection();
   connectionKey = key;
   connection = new SseConnection({
-    url: apiPaths.events(key ?? undefined),
+    url: apiPaths.events(want?.sessionId, want?.leadSession ?? undefined),
     eventNames: ["sessions", "session", "session_gone", "ping"],
     onConn: setConn,
     onEvent: (event, data) => {
@@ -293,8 +297,9 @@ export function getEventsSnapshot(): EventsSnapshot {
 export function subscribeEvents(
   sessionId: string | null,
   notify: () => void,
+  leadSession: string | null = null,
 ): () => void {
-  const listener: EventsListener = { sessionId, notify };
+  const listener: EventsListener = { sessionId, leadSession, notify };
   listeners.add(listener);
   ensureConnection();
   return () => {
