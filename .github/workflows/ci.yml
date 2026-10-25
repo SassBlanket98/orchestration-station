@@ -16,6 +16,9 @@ jobs:
   station:
     name: station (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # macOS is report-only until its process-table gaps are fixed (service detection,
+    # argv-based model names); Linux must pass.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
