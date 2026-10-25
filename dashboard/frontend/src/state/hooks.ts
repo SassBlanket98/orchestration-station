@@ -392,12 +392,13 @@ export function useSession(id: string, leadSession: string | null = null): Sessi
 export function useWorkerDetail(
   sid: string,
   name: string,
+  leadSession: string | null = null,
 ): RequestResult<WorkerDetail | null> {
   const at = useTick();
   const mock = isMockMode();
-  const key = mock || name === "" ? null : JSON.stringify([sid, name]);
+  const key = mock || name === "" ? null : JSON.stringify([sid, name, leadSession]);
   const request = useRequest(key, (signal) =>
-    fetchWorkerDetail(sid, name, signal),
+    fetchWorkerDetail(sid, name, signal, leadSession),
   );
   if (mock) {
     const data = workerDetailFixture(sid, name);

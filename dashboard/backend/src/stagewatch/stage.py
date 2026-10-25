@@ -1252,13 +1252,18 @@ def session_lead_matches(stage: Path, stem: str, lead_session: str) -> bool:
     return lead_session in (data.get("lead_session"), data.get("root_session"))
 
 
-def _artifact_in_scope(rel: str, members: set[str]) -> bool:
-    """Whether the worker artifact `rel` belongs to one of the `members` stems."""
+def _artifact_in_scope(rel: str, members: set[str], stems: set[str]) -> bool:
+    """Whether the worker artifact `rel` belongs to one of the `members` stems.
+
+    `stems` is every worker in the stage, so a brief goes to its most specific owner:
+    `briefs/alpha-x.md` is `alpha-x`'s when that worker exists, not `alpha`'s.
+    """
     if rel.startswith("briefs/") and rel.endswith(".md"):
         # `briefs/<stem>.md`, or `briefs/<stem>-<rest>.md` as `_brief_relpath` allows.
         base = rel[len("briefs/") : -len(".md")]
-        owners = {base, *(base[:i] for i, char in enumerate(base) if char == "-")}
-        return not owners.isdisjoint(members)
+        owners = [base, *(base[:i] for i, char in enumerate(base) if char == "-")]
+        owner = max((o for o in owners if o in stems), key=len, default=None)
+        return owner in members
     if rel.endswith("/REPORT.md"):
         return rel[: -len("/REPORT.md")] in members
     return any(
@@ -1280,6 +1285,7 @@ def scope_detail(detail: SessionDetail, lead_session: str) -> SessionDetail:
         for worker in detail.workers
         if session_lead_matches(stage, worker.name, lead_session)
     }
+    stems = {worker.name for worker in detail.workers}
     workers = [worker for worker in detail.workers if worker.name in members]
     counts = _count(workers)
     return detail.model_copy(
@@ -1293,7 +1299,7 @@ def scope_detail(detail: SessionDetail, lead_session: str) -> SessionDetail:
             "tokens_total": _sum_or_none([worker.tokens for worker in workers]),
             "cost_total": _sum_or_none([worker.cost for worker in workers]),
             "artifacts": [
-                item for item in detail.artifacts if _artifact_in_scope(item.name, members)
+                item for item in detail.artifacts if _artifact_in_scope(item.name, members, stems)
             ],
             "log_index": [entry for entry in detail.log_index or [] if entry.worker_name in members]
             or None,

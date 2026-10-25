@@ -23,13 +23,15 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
 export function WorkerDrawer({
   sessionId,
   workerName,
+  leadSession = null,
   onClose,
 }: {
   sessionId: string;
   workerName: string;
+  leadSession?: string | null;
   onClose: () => void;
 }) {
-  const { data, loading } = useWorkerDetail(sessionId, workerName);
+  const { data, loading } = useWorkerDetail(sessionId, workerName, leadSession);
   const [tab, setTab] = useState<Tab>("brief");
   const reduce = useReducedMotion();
   const layerRef = useRef<HTMLDivElement>(null);

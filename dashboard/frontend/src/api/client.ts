@@ -110,10 +110,12 @@ export async function fetchWorkerDetail(
   sid: string,
   name: string,
   signal?: AbortSignal,
+  leadSession: string | null = null,
 ): Promise<WorkerDetail | null> {
+  const query = leadSession ? `?lead_session=${encodeURIComponent(leadSession)}` : "";
   try {
     return await getJson<WorkerDetail>(
-      `/sessions/${encodeURIComponent(sid)}/workers/${encodeURIComponent(name)}`,
+      `/sessions/${encodeURIComponent(sid)}/workers/${encodeURIComponent(name)}${query}`,
       signal,
     );
   } catch (err) {

@@ -218,3 +218,13 @@ def test_session_frame_scopes_the_live_stream(store: SnapshotStore, sid: str) ->
 
     assert _names(_frame_body(_session_frame(store, sid))) == ALL_WORKERS
     assert _names(_frame_body(_session_frame(store, sid, LEAD))) == {"alpha", "beta"}
+
+
+def test_brief_goes_to_its_most_specific_worker(tmp_path: Path) -> None:
+    from stagewatch.stage import _artifact_in_scope
+
+    stems = {"alpha", "alpha-x"}
+    assert _artifact_in_scope("briefs/alpha-x.md", {"alpha-x"}, stems)
+    assert not _artifact_in_scope("briefs/alpha-x.md", {"alpha"}, stems)
+    # With no `alpha-x` worker the suffixed brief is `alpha`'s, as `_brief_relpath` picks it.
+    assert _artifact_in_scope("briefs/alpha-x.md", {"alpha"}, {"alpha"})

@@ -22,7 +22,8 @@ export default function Session() {
   const { sessionId = "", worker } = useParams();
   const navigate = useNavigate();
   const { search } = useLocation();
-  const { session, conn, notFound } = useSession(sessionId, new URLSearchParams(search).get("lead_session"));
+  const leadSession = new URLSearchParams(search).get("lead_session");
+  const { session, conn, notFound } = useSession(sessionId, leadSession);
   const [openLog, setOpenLog] = useState<string | null>(null);
 
   const closeDrawer = useCallback(() => {
@@ -95,6 +96,7 @@ export default function Session() {
             key={`${session.id}/${worker}`}
             sessionId={session.id}
             workerName={worker}
+            leadSession={leadSession}
             onClose={closeDrawer}
           />
         )}

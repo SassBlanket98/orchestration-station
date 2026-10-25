@@ -47,8 +47,9 @@ function WorkerDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
 
   const mockView = isMockMode() ? workerMockView(name) : null;
-  const live = useWorkerDetail(sid, name);
-  const { session } = useSession(sid);
+  const leadSession = params.get("lead_session");
+  const live = useWorkerDetail(sid, name, leadSession);
+  const { session } = useSession(sid, leadSession);
 
   const view: WorkerView | null =
     mockView ??
