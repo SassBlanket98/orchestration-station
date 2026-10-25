@@ -2,4 +2,9 @@
 # Runs scripts/check.sh before every push so CI failures show up locally first.
 # Skip once with: git push --no-verify (CI still runs on GitHub).
 set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
+check="$(git rev-parse --show-toplevel)/scripts/check.sh"
+if [ ! -x "$check" ]; then
+  echo "pre-push: $check not on this branch, skipped (CI still runs)" >&2
+  exit 0
+fi
+exec "$check"
