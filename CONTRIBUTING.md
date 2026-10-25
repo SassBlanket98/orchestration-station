@@ -8,6 +8,16 @@ Thanks for helping. Bug reports, fixes and small features are welcome.
 - The station uses the Python standard library only. Do not add third-party packages to `station/`.
 - The monitor is read-only by default. Changes that write to stage files, or start or stop processes, must stay behind `--allow-actions`.
 
+## Check before you push
+
+`scripts/check.sh` runs the same checks as CI. Install it as a pre-push hook once:
+
+```sh
+scripts/install-hooks.sh
+```
+
+Pull requests run CI before review. Pull requests from first-time contributors wait for a maintainer to approve the run.
+
 ## Station (`station/`)
 
 The station is a set of modules in `station/src/`. `build.py` joins them into one file, `station/station`. Edit `station/src/`, never the built file.
