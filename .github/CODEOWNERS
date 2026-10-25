@@ -1,0 +1,7 @@
+# Changes to CI, build and install paths need the maintainer's review.
+* @SassBlanket98
+/.github/ @SassBlanket98
+/scripts/ @SassBlanket98
+/install.sh @SassBlanket98
+/deploy/ @SassBlanket98
+/station/build.py @SassBlanket98

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Runs scripts/check.sh before every push so CI failures show up locally first.
+# Skip once with: git push --no-verify (CI still runs on GitHub).
+set -euo pipefail
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
