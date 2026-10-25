@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useLocation, useNavigate } from "react-router-dom";
 import type { MonitorStage, MonitorWorker, SessionSummary } from "../../api/types";
 import { useMonitor, useQuotaUsage } from "../../state/hooks";
-import { buildRollup, isWorking, waitingStages, workingCount, type RollupNode } from "./rollup";
+import { buildRollup, isWorkerLive, isWorking, waitingStages, workingCount, type RollupNode } from "./rollup";
 import { useActivity } from "./useActivity";
 import { NeedsYou } from "./NeedsYou";
 import { StagePeek } from "./StagePeek";
@@ -24,6 +24,25 @@ type Latest = { nav: NavItem[]; cursor: string | null; helpOpen: boolean };
 
 const sessionPath = (id: string) => "/runs/" + encodeURIComponent(id);
 const stageLabel = (stage: MonitorStage) => stage.display_name || stage.session_name || stage.label;
+
+/** Search for a run page opened from a stage: the overview's own params, plus the stage's lead session when it has one. */
+export function runSearch(search: string, leadSessionId: string | null | undefined): string {
+  if (!leadSessionId) return search;
+  const params = new URLSearchParams(search);
+  params.set("lead_session", leadSessionId);
+  return `?${params}`;
+}
+
+/**
+ * Masthead totals. Projects are the roll-up's groups (stage.project, else the label); workers are live
+ * workers only, so finished and historical workers never inflate the count.
+ */
+export function mastheadTotals(stages: MonitorStage[]): { projects: number; workers: number } {
+  const projects = new Set(stages.map((stage) => stage.project || stage.label));
+  let workers = 0;
+  for (const stage of stages) workers += (stage.workers ?? []).filter(isWorkerLive).length;
+  return { projects: projects.size, workers };
+}
 
 function matches(stage: MonitorStage, query: string): boolean {
   const needle = query.trim().toLowerCase();
@@ -257,11 +276,11 @@ export function BoardOverview({ sessions, connecting = false }: { sessions: Sess
       .forEach((item, offset) => prefixes.set(nodes[start + offset].key, item));
     start = end;
   }
-  const workers = sessions.reduce((sum, session) => sum + session.worker_total, 0);
+  const totals = mastheadTotals(stages);
   const activitySeries = sessions.map(({ activity_series }) => activity_series);
 
   return <main className="plant-page" ref={page}>
-    <BoardMasthead projects={stages.length} workers={workers} working={working} idle={idle} quota={quota.data}
+    <BoardMasthead projects={totals.projects} workers={totals.workers} working={working} idle={idle} quota={quota.data}
       quotaLoading={quota.loading} quotaOffline={Boolean(quota.error || quota.data?.offline)} banner={banner} statsOpen={view.statsOpen}
       onToggleStats={() => setView((current) => ({ ...current, statsOpen: !current.statsOpen }))} activitySeries={activitySeries} />
     <div className="plant-toolbar">
@@ -282,13 +301,13 @@ export function BoardOverview({ sessions, connecting = false }: { sessions: Sess
           if (node.kind !== "stage" || peek !== node.stage.path) return row;
           const session = sessionFor(node.stage);
           return <Fragment key={node.key}>{row}<StagePeek stage={node.stage} activity={activity[node.stage.path]} nowSec={nowMs / 1000}
-            onOpenRun={session ? () => navigate({ pathname: sessionPath(session.id), search }) : null} /></Fragment>;
+            onOpenRun={session ? () => navigate({ pathname: sessionPath(session.id), search: runSearch(search, node.stage.session_id) }) : null} /></Fragment>;
         })}
       <div className="plant-sr" aria-live="polite" />
     </div>
     <footer className="plant-hints"><span><kbd>j</kbd>/<kbd>k</kbd> move</span><span><kbd>Enter</kbd> open/toggle</span><span><kbd>→</kbd>/<kbd>←</kbd> fold</span><span><kbd>e</kbd> projects</span><span><kbd>h</kbd> idle</span><span><kbd>a</kbd> closed</span><span><kbd>g</kbd>/<kbd>G</kbd> first/last</span><span><kbd>/</kbd> filter</span><span><kbd>?</kbd> keys</span></footer>
     {workerLook && <WorkerPeek stage={workerLook.stage} worker={workerLook.worker} nowSec={nowMs / 1000}
-      onOpenRun={sessionFor(workerLook.stage) ? () => { const session = sessionFor(workerLook.stage); if (session) navigate({ pathname: sessionPath(session.id), search }); } : null}
+      onOpenRun={sessionFor(workerLook.stage) ? () => { const session = sessionFor(workerLook.stage); if (session) navigate({ pathname: sessionPath(session.id), search: runSearch(search, workerLook.stage.session_id) }); } : null}
       onClose={() => setWorkerLook(null)} />}
     {helpOpen && <BoardHelp onClose={() => setHelpOpen(false)} />}
   </main>;

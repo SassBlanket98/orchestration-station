@@ -22,7 +22,7 @@ export default function Session() {
   const { sessionId = "", worker } = useParams();
   const navigate = useNavigate();
   const { search } = useLocation();
-  const { session, conn, notFound } = useSession(sessionId);
+  const { session, conn, notFound } = useSession(sessionId, new URLSearchParams(search).get("lead_session"));
   const [openLog, setOpenLog] = useState<string | null>(null);
 
   const closeDrawer = useCallback(() => {

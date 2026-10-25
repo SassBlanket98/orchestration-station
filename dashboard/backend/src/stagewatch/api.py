@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -44,6 +44,7 @@ from stagewatch.quota import (
     usage_from_upstream,
 )
 from stagewatch.scanner import Scanner
+from stagewatch.stage import scope_detail, session_lead_matches
 from stagewatch.tail import MAX_WINDOW, read_from, read_tail
 
 SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")
@@ -155,15 +156,21 @@ def _initial_window(stem: str, path: Path, tail_bytes: int) -> tuple[LogChunk, i
     return log_chunk, offset, chunk.inode
 
 
-def _session_frame(store: StoreProtocol, sid: str) -> str:
+def _session_frame(store: StoreProtocol, sid: str, lead_session: str | None = None) -> str:
     detail = store.detail(sid)
     if detail is None:
         return _frame("session_gone", {"id": sid})
+    if lead_session is not None:
+        detail = scope_detail(detail, lead_session)
     return _frame("session", detail.model_dump(mode="json"), detail.rev)
 
 
 async def _event_stream(
-    store: StoreProtocol, scanner: Scanner, sid: str | None, timing: SseTiming
+    store: StoreProtocol,
+    scanner: Scanner,
+    sid: str | None,
+    timing: SseTiming,
+    lead_session: str | None = None,
 ) -> AsyncIterator[str]:
     queue = scanner.subscribe()
     try:
@@ -171,7 +178,7 @@ async def _event_stream(
         sessions = _sessions_payload(store)
         yield _frame("sessions", sessions, max((s["rev"] for s in sessions["sessions"]), default=0))
         if sid is not None:
-            yield _session_frame(store, sid)
+            yield _session_frame(store, sid, lead_session)
         last_ping = time.monotonic()
         while True:
             wait = max(timing.ping_s - (time.monotonic() - last_ping), 0.0)
@@ -188,7 +195,7 @@ async def _event_stream(
                 "sessions", sessions, max((s["rev"] for s in sessions["sessions"]), default=0)
             )
             if sid is not None and sid in changed:
-                yield _session_frame(store, sid)
+                yield _session_frame(store, sid, lead_session)
     finally:
         scanner.unsubscribe(queue)
 
@@ -443,18 +450,31 @@ def create_app(store: StoreProtocol, cfg: Config, timing: SseTiming | None = Non
     def sessions() -> dict[str, Any]:
         return _sessions_payload(store)
 
+    # `lead_session` limits the workers to one lead session's (see `scope_detail`).
     @app.get("/api/sessions/{sid}")
-    def session_detail(sid: str) -> SessionDetail:
+    def session_detail(
+        sid: str, lead_session: str | None = Query(default=None, min_length=1, max_length=128)
+    ) -> SessionDetail:
         detail = store.detail(sid)
         if detail is None:
             raise _not_found("session not found")
-        return detail
+        if lead_session is None:
+            return detail
+        return scope_detail(detail, lead_session)
 
     @app.get("/api/sessions/{sid}/workers/{name}")
-    def worker_detail(sid: str, name: str) -> WorkerDetail:
+    def worker_detail(
+        sid: str,
+        name: str,
+        lead_session: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> WorkerDetail:
         detail = store.worker_detail(sid, name) if SAFE_NAME.fullmatch(name) else None
         if detail is None:
             raise _not_found("worker not found")
+        if lead_session is not None:
+            session = store.detail(sid)
+            if session is None or not session_lead_matches(Path(session.path), name, lead_session):
+                raise _not_found("worker not found")
         return detail
 
     @app.get("/api/sessions/{sid}/logs/{stem}")
@@ -481,8 +501,11 @@ def create_app(store: StoreProtocol, cfg: Config, timing: SseTiming | None = Non
         return StreamingResponse(events, media_type="text/event-stream", headers=SSE_HEADERS)
 
     @app.get("/api/events")
-    def events(session: str | None = None) -> StreamingResponse:
-        stream = _event_stream(store, scanner, session, timing)
+    def events(
+        session: str | None = None,
+        lead_session: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> StreamingResponse:
+        stream = _event_stream(store, scanner, session, timing, lead_session)
         return StreamingResponse(stream, media_type="text/event-stream", headers=SSE_HEADERS)
 
     @app.get("/api/logs")

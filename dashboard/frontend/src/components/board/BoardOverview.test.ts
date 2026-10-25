@@ -3,8 +3,8 @@ import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MonitorResponse, MonitorStage, SessionSummary } from "../../api/types";
-import { BoardOverview, filterRollup, reduceOverviewKey } from "./BoardOverview";
-import { DEFAULT_VIEW, STORAGE_KEY, serializeView } from "./view";
+import { BoardOverview, filterRollup, mastheadTotals, reduceOverviewKey, runSearch } from "./BoardOverview";
+import { DEFAULT_VIEW, STORAGE_KEY, serializeView, type BoardView } from "./view";
 
 const hooks = vi.hoisted(() => ({ data: null as MonitorResponse | null }));
 vi.mock("../../state/hooks", () => ({
@@ -36,9 +36,9 @@ const session: SessionSummary = {
   latest_milestone: null, findings_total: 0, running_workers: [], lead: null, stream: null,
   cycle_progress: null, source_warnings: [], worker_previews: [], worker_total: 0, activity_series: [],
 };
-// Runs `fn` with a saved view in localStorage, as the page loads it.
-const withSavedView = (open: string[], fn: () => void) => {
-  const saved = new Map([[STORAGE_KEY, JSON.stringify(serializeView({ ...DEFAULT_VIEW, open: new Set(open) }))]]);
+// Runs `fn` with a saved view in localStorage, as the page loads it; `patch` sets other view fields such as statsOpen.
+const withSavedView = (open: string[], fn: () => void, patch: Partial<BoardView> = {}) => {
+  const saved = new Map([[STORAGE_KEY, JSON.stringify(serializeView({ ...DEFAULT_VIEW, ...patch, open: new Set(open) }))]]);
   const store = { getItem: (k: string) => saved.get(k) ?? null, setItem: () => {}, removeItem: () => {} };
   vi.stubGlobal("window", { localStorage: store, sessionStorage: store });
   try { fn(); } finally { vi.unstubAllGlobals(); }
@@ -66,6 +66,28 @@ describe("Board overview roll-up", () => {
     });
   });
 
+  it("totals distinct project groups and live workers only", () => {
+    const totals = mastheadTotals([
+      stage({ project: "Orchard", workers: [{ name: "a", state: "running" }, { name: "b", state: "stalled" }, { name: "c", state: "done" }, { name: "d", state: "failed" }] }),
+      stage({ path: "/stage/b", project: "Orchard", workers: [{ name: "e", state: "quiet" }] }),
+      // No project: the roll-up groups it under its label.
+      stage({ path: "/stage/c", project: undefined, label: "scratch", workers: [] }),
+      stage({ path: "/stage/d", project: "", label: "scratch", workers: [{ name: "f", state: "exited" }] }),
+    ]);
+    expect(totals).toEqual({ projects: 2, workers: 3 });
+    expect(mastheadTotals([])).toEqual({ projects: 0, workers: 0 });
+  });
+
+  it("keeps the overview's params and adds lead_session only when the stage has a session", () => {
+    expect(runSearch("?filter=x", undefined)).toBe("?filter=x");
+    expect(runSearch("", null)).toBe("");
+    expect(runSearch("", "session-1")).toBe("?lead_session=session-1");
+    expect(runSearch("?mock=1&status=active", "session-1")).toBe("?mock=1&status=active&lead_session=session-1");
+    // An existing lead_session is replaced, not duplicated.
+    expect(runSearch("?lead_session=old&mock=1", "session-1")).toBe("?lead_session=session-1&mock=1");
+    expect(runSearch("", "a b")).toBe("?lead_session=a+b");
+  });
+
   it("shows folded matches while filtering, independent of the project fold", () => {
     const closedProject = stage({ label: "spawn", lead_state: "closed", section: "closed", project: "Hidden orchard", workers: [] });
     const nodes = filterRollup([closedProject], "spawn");
@@ -88,6 +110,21 @@ describe("Board overview roll-up", () => {
     const html = render();
     expect(html).toContain("2<!-- --> working");
     expect(html).toContain("idle · 1");
+  });
+
+  it("counts distinct projects and live workers in the masthead, not historical worker totals", () => {
+    hooks.data = data([
+      stage({ workers: [{ name: "a", state: "running" }, { name: "b", state: "done" }] }),
+      stage({ path: "/stage/b", session_id: "session-2", workers: [{ name: "c", state: "quiet" }] }),
+      stage({ path: "/stage/c", project: undefined, label: "scratch", workers: [] }),
+    ]);
+    // Stats are folded by default; the saved view opens them so the totals render.
+    withSavedView([], () => {
+      const open = render([{ ...session, worker_total: 9 }]);
+      expect(open).toContain("2<!-- --> projects");
+      expect(open).toContain("2<!-- --> live workers");
+      expect(open).not.toContain("9<!-- --> live workers");
+    }, { statsOpen: true });
   });
 
   it("folds a working project when its key is in the saved open set", () => {

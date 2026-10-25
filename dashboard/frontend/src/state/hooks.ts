@@ -116,12 +116,12 @@ export function useTick(): number {
 }
 
 /** Subscribe to the shared `/api/events` snapshot (no-op in mock mode). */
-function useEvents(sessionId: string | null): EventsSnapshot {
+function useEvents(sessionId: string | null, leadSession: string | null = null): EventsSnapshot {
   const mock = isMockMode();
   const subscribe = useCallback(
     (notify: () => void) =>
-      mock ? () => {} : subscribeEvents(sessionId, notify),
-    [mock, sessionId],
+      mock ? () => {} : subscribeEvents(sessionId, notify, leadSession),
+    [mock, sessionId, leadSession],
   );
   return useSyncExternalStore(subscribe, getEventsSnapshot, getEventsSnapshot);
 }
@@ -351,9 +351,9 @@ export type SessionResult = RequestResult<SessionDetail> & {
   notFound: boolean;
 };
 
-export function useSession(id: string): SessionResult {
+export function useSession(id: string, leadSession: string | null = null): SessionResult {
   const at = useTick();
-  const events = useEvents(id);
+  const events = useEvents(id, leadSession);
   if (isMockMode()) {
     // Demo overview ids have no detail fixture; show the first fixture so run links still open.
     const base = sessionFixture(id) ?? sessionFixture(fixtureSessionIds[0]);

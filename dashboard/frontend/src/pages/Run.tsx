@@ -25,7 +25,7 @@ export default function Run() {
   const { sid = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { session, conn, notFound } = useSession(sid);
+  const { session, conn, notFound } = useSession(sid, new URLSearchParams(location.search).get("lead_session"));
   const tab = tabFromPath(location.pathname);
   const status = statusFromSearch(location.search);
   const mock = isMockMode();

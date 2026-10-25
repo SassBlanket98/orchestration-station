@@ -6,6 +6,7 @@ and worktree contents cost nothing. `StageParser` keeps a per-file cache keyed
 by `(mtime_ns, size)` so an unchanged file is never re-read.
 """
 
+import json
 import os
 import re
 import stat
@@ -53,6 +54,8 @@ LEAD_WARNING = "lead state unresolved: conflicting or partial evidence"
 CHECK_STEM_RE = re.compile(r"^final-|-(?:lint|test|typecheck|red)$")
 FINDING_RE = re.compile(r"^- \[P(\d)\]\s*(.+)$")
 REVIEW_PREFIX = "review-"
+# A worker's `<stem>.session` JSON names its lead and root session; bigger files are ignored.
+SESSION_READ_CAP = 64 * 1024
 STALE_SECONDS = 300.0
 PID_GUARD_SECONDS = 5.0
 # A launcher may write `<stem>.pid` seconds after the worker process is up, so
@@ -894,17 +897,7 @@ class StageParser:
             findings_by_priority=_findings_by_priority(reviews),
             tokens_total=_sum_or_none([worker.tokens for worker in workers]),
             cost_total=_sum_or_none([worker.cost for worker in workers]),
-            running_workers=[
-                RunningWorker(
-                    name=worker.name,
-                    model=worker.model,
-                    engine=worker.engine,
-                    started_at=worker.started_at,
-                    now=worker.now,
-                )
-                for worker in workers
-                if worker.status == "running"
-            ],
+            running_workers=_running_workers(workers),
             workers=workers,
             milestones=milestones,
             reviews=reviews,
@@ -1217,6 +1210,95 @@ def _sort_workers(workers: list[Worker]) -> list[Worker]:
     running.sort(key=lambda worker: (worker.started_at is None, -(worker.started_at or 0.0)))
     rest.sort(key=lambda worker: (worker.finished_at is None, -(worker.finished_at or 0.0)))
     return running + rest
+
+
+def _running_workers(workers: list[Worker]) -> list[RunningWorker]:
+    return [
+        RunningWorker(
+            name=worker.name,
+            model=worker.model,
+            engine=worker.engine,
+            started_at=worker.started_at,
+            now=worker.now,
+        )
+        for worker in workers
+        if worker.status == "running"
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Session scope: one lead session's workers out of a shared `.stage`
+# --------------------------------------------------------------------------- #
+# Suffixes of the per-worker files `_worker_artifacts` lists under the worker's stem.
+_STEM_ARTIFACT_SUFFIXES = (".log", ".txt", ".patch", ".diff", ".json")
+
+
+def session_lead_matches(stage: Path, stem: str, lead_session: str) -> bool:
+    """Whether `<stem>.session` names `lead_session` as its lead or its root session.
+
+    A missing, unreadable, oversized, non-object or malformed file never matches.
+    """
+    path = stage / f"{stem}.session"
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > SESSION_READ_CAP:
+            return False
+        with open(path, "rb") as fh:
+            data = json.loads(fh.read(SESSION_READ_CAP + 1))
+    except (OSError, ValueError, RecursionError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return lead_session in (data.get("lead_session"), data.get("root_session"))
+
+
+def _artifact_in_scope(rel: str, members: set[str]) -> bool:
+    """Whether the worker artifact `rel` belongs to one of the `members` stems."""
+    if rel.startswith("briefs/") and rel.endswith(".md"):
+        # `briefs/<stem>.md`, or `briefs/<stem>-<rest>.md` as `_brief_relpath` allows.
+        base = rel[len("briefs/") : -len(".md")]
+        owners = {base, *(base[:i] for i, char in enumerate(base) if char == "-")}
+        return not owners.isdisjoint(members)
+    if rel.endswith("/REPORT.md"):
+        return rel[: -len("/REPORT.md")] in members
+    return any(
+        rel.endswith(suffix) and rel[: -len(suffix)] in members
+        for suffix in _STEM_ARTIFACT_SUFFIXES
+    )
+
+
+def scope_detail(detail: SessionDetail, lead_session: str) -> SessionDetail:
+    """The session limited to the workers that `lead_session` owns (see `session_lead_matches`).
+
+    Only worker-derived fields change: counts, status, running workers, previews,
+    totals, artifacts and the log index. Reviews, milestones and the lead belong to
+    the stage as a whole, so they are kept as they are.
+    """
+    stage = Path(detail.path)
+    members = {
+        worker.name
+        for worker in detail.workers
+        if session_lead_matches(stage, worker.name, lead_session)
+    }
+    workers = [worker for worker in detail.workers if worker.name in members]
+    counts = _count(workers)
+    return detail.model_copy(
+        update={
+            "status": "active" if counts.running > 0 else "idle",
+            "counts": counts,
+            "running_workers": _running_workers(workers),
+            "workers": workers,
+            "worker_previews": [_worker_preview(worker) for worker in workers],
+            "worker_total": len(workers),
+            "tokens_total": _sum_or_none([worker.tokens for worker in workers]),
+            "cost_total": _sum_or_none([worker.cost for worker in workers]),
+            "artifacts": [
+                item for item in detail.artifacts if _artifact_in_scope(item.name, members)
+            ],
+            "log_index": [entry for entry in detail.log_index or [] if entry.worker_name in members]
+            or None,
+        }
+    )
 
 
 def summary_of(detail: SessionDetail) -> SessionSummary:
