@@ -105,7 +105,7 @@ class PathLine(unittest.TestCase):
     """↳ shows only when the session started elsewhere than its project label, or its workers run elsewhere."""
 
     def setUp(self) -> None:
-        env = patch.dict(os.environ, {}, clear=True)
+        env = patch.dict(os.environ, {"HOME": HOME}, clear=True)  # keep the HOME the expected paths were built from
         env.start()
         self.addCleanup(env.stop)
 
