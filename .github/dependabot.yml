@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: uv
+    directory: /dashboard/backend
+    schedule: { interval: weekly }
+    groups:
+      backend: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /dashboard/frontend
+    schedule: { interval: weekly }
+    groups:
+      frontend: { patterns: ["*"] }
