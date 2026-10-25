@@ -46,7 +46,7 @@ NOW = 1_760_050_000.0
 def setUpModule() -> None:
     # Clock text is checked at UTC+2 (tests/run.sh). macOS libc can keep an older zone after another test
     # clears os.environ, so re-read TZ here instead of trusting whatever ran before.
-    os.environ["TZ"] = "Etc/GMT-2"
+    os.environ["TZ"] = "UTC-2"
     time.tzset()
 BLUE = "38;2;{};{};{}".format(*widgets._wd_C_BLUE)
 BORDER = "38;2;{};{};{}".format(*widgets._wd_C_BORDER)
