@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import time
 import unittest
 from unittest.mock import patch
 
@@ -41,13 +40,6 @@ from render import (
 from widgets import _wd_SGR_RE, _wd_width
 
 NOW = 1_760_050_000.0
-
-
-def setUpModule() -> None:
-    # Clock text is checked at UTC+2 (tests/run.sh). macOS libc can keep an older zone after another test
-    # clears os.environ, so re-read TZ here instead of trusting whatever ran before.
-    os.environ["TZ"] = "UTC-2"
-    time.tzset()
 BLUE = "38;2;{};{};{}".format(*widgets._wd_C_BLUE)
 BORDER = "38;2;{};{};{}".format(*widgets._wd_C_BORDER)
 RED = "38;2;{};{};{}".format(*widgets._wd_C_RED)
@@ -88,7 +80,8 @@ def card_lines(frame: list[str], label: str) -> list[str]:
 
 class GlobalRenderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.no_color = patch.dict(os.environ, {}, clear=True)
+        # keep TZ: macOS libc re-reads it on every localtime call, so dropping it shows host-zone clocks
+        self.no_color = patch.dict(os.environ, {"TZ": os.environ.get("TZ", "")}, clear=True)
         self.no_color.start()
         self.addCleanup(self.no_color.stop)
 
