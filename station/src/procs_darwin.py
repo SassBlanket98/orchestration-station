@@ -146,7 +146,8 @@ def _pd_table(fresh: bool = False) -> dict[int, tuple]:
         _pd_table_memo = (now + _PD_FAIL_TTL - _PD_TTL, {})
         return {}
     rows = _pd_parse_table(out, _pd_boot())
-    _pd_table_memo = (now, rows)
+    # stamp after the read so a slow ps does not leave the per-pid readers an already expired memo
+    _pd_table_memo = (time.monotonic(), rows)
     return rows
 
 
