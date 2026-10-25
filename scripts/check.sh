@@ -3,6 +3,8 @@
 # Usage: scripts/check.sh [station|backend|frontend|workflows ...]   (default: all)
 # Keep this in step with ci.yml: a check added there belongs here too.
 set -euo pipefail
+# A pre-push hook exports GIT_DIR, GIT_INDEX_FILE etc.; left set they aim every git call (tests included) at this repo.
+unset $(git rev-parse --local-env-vars)
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 parts=("$@")
