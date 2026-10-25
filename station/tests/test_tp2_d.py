@@ -4,9 +4,10 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+from test_cc_keys import SEL_WORKER, _actions, _gs, _ui
+
 import cckeys
 from cckeys import cc_key
-from test_cc_keys import SEL_WORKER, _actions, _gs, _ui
 
 
 class StopToKillTests(unittest.TestCase):

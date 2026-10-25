@@ -23,7 +23,7 @@ class StateCache:
                     value = self._payload_fn()
                     if not isinstance(value, dict): raise TypeError("payload_fn must return a dict")
                     self._value = copy.deepcopy(value); self._updated = time.monotonic()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - the state cache serves the last good value on any payload error
                     print(f"station: state refresh failed: {exc}", file=sys.stderr)
                     if self._value is None: return {}
                     errors = self._value.setdefault("errors", [])
@@ -64,7 +64,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
         def _json(self, status, value):
             raw = json.dumps(value, ensure_ascii=False).encode(); self._send(status, raw, "application/json")
         def _api_json(self, value):
-            body, etag = _canonical(value)
+            _body, etag = _canonical(value)
             headers = [("ETag", etag), ("Vary", "Accept-Encoding")]
             request_headers = getattr(self, "headers", {})
             if request_headers.get("If-None-Match") == etag:
@@ -111,7 +111,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
                         return self._send(404, b"Not found", "text/plain; charset=utf-8")
                     return self._api_json(result)
                 self._send(404, b"Not found", "text/plain; charset=utf-8")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a request must get a 500, never kill the server
                 print(f"station: request failed: {exc}", file=sys.stderr); self._send(500, b"Internal server error", "text/plain; charset=utf-8")
         def do_POST(self):
             try:
@@ -130,7 +130,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
                 if path not in {s.get("path") for s in cache.get().get("stages", [])}: return self._send(404, b"Not found", "text/plain; charset=utf-8")
                 result = control_fn(path, action); cache.expire()
                 return self._json(200, {"ok": True, **result})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a request must get a 500, never kill the server
                 print(f"station: request failed: {exc}", file=sys.stderr); self._send(500, b"Internal server error", "text/plain; charset=utf-8")
         def log_message(self, fmt, *args): print(f"station: {self.address_string()} - {fmt % args}", file=sys.stderr)
     try: server = ThreadingHTTPServer((host, port), Handler)

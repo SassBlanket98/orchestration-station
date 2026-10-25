@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 import unittest.mock
+from typing import ClassVar
 
 import collect
 
@@ -204,7 +205,7 @@ class OpenClawTree(unittest.TestCase):
 class LaunchedFromClaude(unittest.TestCase):
     """An Bot session started by `openclaw agent` from a Claude session is workers of that Claude row."""
 
-    ARGV = {5: ["/usr/bin/node", "/x/openclaw/dist/index.js", "agent", "--agent", "openclaw", "--session-key", "agent:openclaw:proof", "--json"],
+    ARGV: ClassVar[dict[int, list[str]]] = {5: ["/usr/bin/node", "/x/openclaw/dist/index.js", "agent", "--agent", "openclaw", "--session-key", "agent:openclaw:proof", "--json"],
             6: ["/usr/bin/node", "/x/openclaw/dist/index.js", "agent", "--session-key=short"],
             7: ["claude", "--model", "sonnet"], 8: ["/usr/bin/node", "/x/openclaw/dist/index.js", "gateway"]}
 
@@ -225,7 +226,7 @@ class LaunchedFromClaude(unittest.TestCase):
             gc = collect.GlobalCollector([empty], quota=False, openclaw_home=home)
             self.addCleanup(gc.close)
             with unittest.mock.patch.object(collect, "_co_openclaw_launches", lambda procs: {"agent:openclaw:proof": ("cc-1", True)}), \
-                    unittest.mock.patch.object(gc, "_co_proc_table", lambda: {}):
+                    unittest.mock.patch.object(gc, "_co_proc_table", dict):
                 oc = collect._co_openclaw_stages(NOW, False, home)
                 self.assertEqual(gc._co_attach_openclaw([host], oc, NOW), [])
                 self.assertEqual(sorted(w.state for w in host.snap.workers), ["done", "running"])
@@ -233,7 +234,7 @@ class LaunchedFromClaude(unittest.TestCase):
                 self.assertEqual((host.live, host.solo), (1, False))
             host2 = collect.Stage(path="/p/.stage", label="p", session_id="cc-1", lead_kind="claude", tag="CC·W", state="active")
             with unittest.mock.patch.object(collect, "_co_openclaw_launches", lambda procs: {}), \
-                    unittest.mock.patch.object(gc, "_co_proc_table", lambda: {}):
+                    unittest.mock.patch.object(gc, "_co_proc_table", dict):
                 self.assertEqual(gc._co_attach_openclaw([host2], collect._co_openclaw_stages(NOW + 5, False, home), NOW + 5), [])
             self.assertEqual(sorted(w.state for w in host2.snap.workers), ["done", "done"])
             other = collect.Stage(path="/q/.stage", label="q", session_id="cc-9", lead_kind="claude", tag="CC·W")

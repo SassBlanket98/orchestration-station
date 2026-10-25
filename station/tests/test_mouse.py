@@ -288,7 +288,7 @@ class OverviewClicks(unittest.TestCase):
         self.assertEqual(self.ui.gpage, "")
 
     def test_any_line_of_a_station_block_hits_it(self) -> None:
-        col, row = self.d.cell("nav", self.idx("/s/proj-0"))
+        _col, row = self.d.cell("nav", self.idx("/s/proj-0"))
         self.d.send(sgr(0, 9, row + 1), NOW)              # the group-progress line under the station row
         self.assertEqual(global_rows(self.gs, self.ui)[self.ui.gsel][0], "/s/proj-0")
 

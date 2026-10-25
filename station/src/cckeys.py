@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from ccactions import can, confirm_text, run, target_of
-from ccpane import PANE_TABS, PANE_TAB_ARROWS, pane_tab_digit
+from ccpane import PANE_TAB_ARROWS, PANE_TABS, pane_tab_digit
 from ccspawn import spawn_cancel, spawn_key, spawn_open, spawn_run
 from ccstrip import STRIP_TABS
 from model import GlobalSnapshot, Stage, UIState, Worker

@@ -32,8 +32,8 @@ def main(argv: list[str]) -> int:
     view = args[2] if len(args) > 2 else "overview"
     text = ["# Brief: accounts API", "Goal: add `GET /api/accounts` with validation", "",
             "- read the existing routes", "- add a handler for `POST /api/accounts`", "* write tests", "",
-            "Some longer paragraph text that has to be wrapped to the width of the panel so that we can "
-            "see how the wrapping behaves on a narrow terminal."]
+            ("Some longer paragraph text that has to be wrapped to the width of the panel so that we can "
+             "see how the wrapping behaves on a narrow terminal.")]
     ui = UIState(view=view, tab=tab, sel=sel, detail_text=text if tab != "live" else [])
     for line in render_frame(busy(), ui, cols, rows, NOW + 0.3):
         print(SGR.sub("", line) if strip else line)
