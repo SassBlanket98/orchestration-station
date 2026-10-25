@@ -32,6 +32,10 @@ STUBBORN = ("import signal, time\n"
             "time.sleep(120)\n")
 
 
+# Process control reads /proc and is Linux-only by design; elsewhere every action is refused.
+_linux_only = unittest.skipUnless(sys.platform.startswith("linux"), "process control is Linux-only (needs /proc)")
+
+
 class Actions(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
@@ -132,6 +136,7 @@ class Actions(unittest.TestCase):
         result = run("stop", Target(kind="worker", label="init", pid=1, live=True))
         self.assertEqual(result, "refused: pid 1 is not ours")
 
+    @_linux_only
     def test_refuses_this_process_and_its_parents(self) -> None:
         me = self.target(os.getpid())
         self.assertEqual(can("stop", me), (False, "that is this terminal"))
@@ -142,6 +147,7 @@ class Actions(unittest.TestCase):
             target = self.target(parent)
             self.assertEqual(can("stop", target), (False, "that is this terminal"))
 
+    @_linux_only
     def test_refuses_another_users_process(self) -> None:
         child = self.sleep_proc()
         seen: list[int] = []
@@ -154,6 +160,7 @@ class Actions(unittest.TestCase):
                          (False, "another user's process"))
         self.assertEqual(seen, [child.pid])
 
+    @_linux_only
     def test_refuses_a_real_foreign_pid(self) -> None:
         foreign = self._foreign_pid()
         if foreign is None:
@@ -176,6 +183,7 @@ class Actions(unittest.TestCase):
                 continue
         return None
 
+    @_linux_only
     def test_refuses_a_pid_that_is_gone(self) -> None:
         child = self.sleep_proc()
         pid = child.pid
@@ -184,6 +192,7 @@ class Actions(unittest.TestCase):
         self.assertEqual(can("stop", Target(kind="worker", label="gone", pid=pid, live=True)),
                          (False, "process is gone"))
 
+    @_linux_only
     def test_refuses_a_recycled_pid(self) -> None:
         child = self.sleep_proc()
         target = self.target(child.pid, start=(ccactions._cac_start(child.pid) or 0) + 1)
@@ -194,6 +203,7 @@ class Actions(unittest.TestCase):
         self.assertEqual(sent, [])
         self.assertIsNone(child.poll())
 
+    @_linux_only
     def test_signal_failure_is_refused_and_not_recorded(self) -> None:
         child = self.sleep_proc()
 
@@ -208,12 +218,14 @@ class Actions(unittest.TestCase):
 
     # ── can/run: stop and kill ───────────────────────────────────────────────
 
+    @_linux_only
     def test_stop_terminates_a_sleep(self) -> None:
         child = self.sleep_proc()
         result = run("stop", self.target(child.pid))
         self.assertEqual(result, f"stopped c2-events (SIGTERM, pid {child.pid})")
         self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
 
+    @_linux_only
     def test_stop_then_kill_reach_a_real_process(self) -> None:
         child = self.stubborn()
         target = self.target(child.pid, label="c5-actions")
@@ -226,6 +238,7 @@ class Actions(unittest.TestCase):
         self.assertEqual(result, f"killed c5-actions (SIGKILL, pid {child.pid})")
         self.assertEqual(child.wait(timeout=5), -signal.SIGKILL)
 
+    @_linux_only
     def test_kill_needs_a_stop_first(self) -> None:
         child = self.stubborn()
         target = self.target(child.pid)
@@ -242,6 +255,7 @@ class Actions(unittest.TestCase):
         self.assertEqual(can("kill", target), (True, ""))
         self.assertIsNone(child.poll())
 
+    @_linux_only
     def test_group_signal_only_when_the_pid_leads_its_own_group(self) -> None:
         plain = self.sleep_proc()
         sent: list[tuple[int, int]] = []
@@ -277,6 +291,7 @@ class Actions(unittest.TestCase):
         self.assertIn(ccactions._cac_pidfd_signal(pid, start, signal.SIGTERM),
                       ("process already gone", "pid changed"))
 
+    @_linux_only
     def test_pidfd_stop_of_a_group_leader(self) -> None:
         """A group cannot be signalled via pidfd: the leader is checked through the fd, then killpg."""
         child = self.sleep_proc(start_new_session=True)
@@ -284,6 +299,7 @@ class Actions(unittest.TestCase):
                          f"stopped c2-events (SIGTERM, pid {child.pid})")
         self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
 
+    @_linux_only
     def test_fallback_numeric_signal_without_pidfd(self) -> None:
         child = self.sleep_proc()
         with mock.patch.object(ccactions, "_cac_PIDFD", False), \
@@ -292,6 +308,7 @@ class Actions(unittest.TestCase):
                              f"stopped c2-events (SIGTERM, pid {child.pid})")
         self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
 
+    @_linux_only
     def test_injected_kill_is_used_even_when_pidfd_exists(self) -> None:
         child = self.sleep_proc()
         sent: list[tuple[int, int]] = []

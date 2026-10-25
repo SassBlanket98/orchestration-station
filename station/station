@@ -845,12 +845,17 @@ def _pd_boot() -> float | None:
     return _pd_boot_memo
 
 
-def _pd_table() -> dict[int, tuple]:
-    """The full process table, reused for _PD_TTL seconds; a stale or empty memo is re-read."""
+def _pd_table(fresh: bool = False) -> dict[int, tuple]:
+    """The full process table, reused for _PD_TTL seconds; a stale or empty memo is re-read.
+
+    `fresh` re-reads a successful memo even inside the TTL (a failed one still waits out
+    _PD_FAIL_TTL): a scan must see processes started since the last read.
+    """
     global _pd_table_memo
     now = time.monotonic()
     memo = _pd_table_memo
-    if memo is not None and now - memo[0] < _PD_TTL:
+    # a failed scan is stored with a future timestamp, so `memo[0] > now` marks the failure backoff
+    if memo is not None and now - memo[0] < _PD_TTL and not (fresh and memo[0] <= now):
         return memo[1]
     out = _pd_run(["ps", "-axww", "-o", "pid=,ppid=,time=,rss=,tty=,lstart=,command="])
     if out is None:
@@ -858,7 +863,8 @@ def _pd_table() -> dict[int, tuple]:
         _pd_table_memo = (now + _PD_FAIL_TTL - _PD_TTL, {})
         return {}
     rows = _pd_parse_table(out, _pd_boot())
-    _pd_table_memo = (now, rows)
+    # stamp after the read so a slow ps does not leave the per-pid readers an already expired memo
+    _pd_table_memo = (time.monotonic(), rows)
     return rows
 
 
@@ -874,8 +880,11 @@ def _pd_boot_id() -> str:
 
 
 def _pd_scan() -> dict[int, tuple[int, int, int, int, int]]:
-    """pid -> (ppid, utime, stime, start_ticks, tty) for every process, as the Linux reader does."""
-    return {pid: row[:5] for pid, row in _pd_table().items()}
+    """pid -> (ppid, utime, stime, start_ticks, tty) for every process, as the Linux reader does.
+
+    Always a new ps read (one per snapshot), like a fresh /proc walk; the per-pid readers then reuse it.
+    """
+    return {pid: row[:5] for pid, row in _pd_table(fresh=True).items()}
 
 
 def _pd_resident(pid: int, page: int) -> int | None:

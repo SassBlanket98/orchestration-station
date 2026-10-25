@@ -80,7 +80,8 @@ def card_lines(frame: list[str], label: str) -> list[str]:
 
 class GlobalRenderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.no_color = patch.dict(os.environ, {}, clear=True)
+        # keep TZ: macOS libc re-reads it on every localtime call, so dropping it shows host-zone clocks
+        self.no_color = patch.dict(os.environ, {"TZ": os.environ.get("TZ", "")}, clear=True)
         self.no_color.start()
         self.addCleanup(self.no_color.stop)
 
