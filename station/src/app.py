@@ -1507,7 +1507,7 @@ def _ap_collector_loop(collector: Collector | GlobalCollector, shared: _ap_Share
             all_history = shared.all_history
         try:
             snap = collector.snapshot(all_history=all_history, quick=True) if quick else collector.snapshot(all_history=all_history)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a collector crash is shown in the UI, the loop must keep running
             with shared.lock:
                 shared.error = f"{type(exc).__name__}: {exc}"
         else:
@@ -1533,7 +1533,7 @@ def _ap_load_detail(ui: UIState, collector: Collector, snap: Snapshot | None, er
         return
     try:
         ui.detail_text = list(collector.detail(snap.workers[ui.sel].name, ui.tab))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a detail read error is shown in the view, not raised
         ui.detail_text = [f"error: {type(exc).__name__}: {exc}"]
     if not ui.detail_text and error:
         ui.detail_text = [f"collector error: {error}"]
@@ -1545,7 +1545,7 @@ def _ap_load_global_detail(ui: UIState, collector: GlobalCollector, path: str, n
         return
     try:
         ui.detail_text = list(collector.detail(path, name, ui.tab))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a detail read error is shown in the view, not raised
         ui.detail_text = [f"error: {type(exc).__name__}: {exc}"]
 
 
@@ -1622,7 +1622,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
         ui.glevel, ui.glevel_all = _ap_load_levels()
         if tutorial:
             ui.demo = True
-            tut_start(ui, lambda: [])
+            tut_start(ui, list)
         saved_levels = (dict(ui.glevel), ui.glevel_all)
         prev_lines: list[str] | None = None
         prev_snap: Snapshot | None = None
@@ -1752,7 +1752,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
             else:
                 try:
                     lines = render_frame(snap, ui, cols, rows, now)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - a render bug must not kill the TUI
                     lines = [_wd_trunc(f"render error: {type(exc).__name__}: {exc}", cols)]
             if error and (gs is not None if global_mode else snap is not None) and lines:
                 lines[-1] = _wd_c(_wd_trunc(f"collector error: {error}", cols), _wd_C_RED)
@@ -1842,7 +1842,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                             _ap_load_page(ui, stage, None, snap, now)
                     elif action == "load_detail" and not global_mode:
                         _ap_load_detail(ui, collector, snap, error)
-    except Exception:
+    except Exception:  # noqa: BLE001 - top-level TUI guard: keep the traceback, then clean up in finally
         trace = traceback.format_exc()
     finally:
         if global_mode and expand_save_at:
@@ -2168,7 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         try:
             collector.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - a failing close on exit must not mask the result
             pass
 
 

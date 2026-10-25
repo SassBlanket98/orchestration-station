@@ -459,7 +459,7 @@ class StreamParseTests(unittest.TestCase):
 
     def test_codex_and_opencode_markers_win_over_stream_markers(self) -> None:
         hook = json.dumps({"type": "system", "subtype": "hook_started", "session_id": "s"})
-        codex = self._write("codex.log", "\n".join([hook, "OpenAI Codex v0.161.0", "--------"]) + "\n")
+        codex = self._write("codex.log", f"{hook}\nOpenAI Codex v0.161.0\n--------\n")
         self.assertEqual(parse_log(codex, now=1.0).harness, "codex")
         oc = self._write("oc.log", "\n".join([hook, _oc(type="step_start", timestamp=1000, part={})]) + "\n")
         self.assertEqual(parse_log(oc, now=1.0).harness, "opencode")

@@ -268,7 +268,7 @@ def _co_iso_epoch(value: object) -> float:
     if not isinstance(value, str):
         return 0.0
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(value).timestamp()
     except ValueError:
         return 0.0
 
@@ -5730,7 +5730,7 @@ class GlobalCollector:
         self._co_quick = quick
         try:
             result = self._co_build(now, all_history)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed build keeps the last good snapshot and reports the error
             previous = self._co_last_global
             return GlobalSnapshot(
                 now=previous.now if previous else now, all_history=all_history,
@@ -6052,7 +6052,7 @@ def worker_changes(stage_dir: str, worker: Worker, now: float) -> WorkerChanges 
             value = _co_folder_changes(os.path.join(stage_dir, worker.name))
         _co_changes_cache[key] = (mono, value)
         return value
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable worktree means no change list, never a crash
         return None
 
 

@@ -1365,7 +1365,7 @@ def _nv_time(value: object) -> float:
         return float(value) / 1000 if value > 100_000_000_000 else float(value)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(value).timestamp()
         except ValueError:
             pass
     return 0.0
@@ -4861,7 +4861,7 @@ def _co_iso_epoch(value: object) -> float:
     if not isinstance(value, str):
         return 0.0
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(value).timestamp()
     except ValueError:
         return 0.0
 
@@ -10323,7 +10323,7 @@ class GlobalCollector:
         self._co_quick = quick
         try:
             result = self._co_build(now, all_history)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed build keeps the last good snapshot and reports the error
             previous = self._co_last_global
             return GlobalSnapshot(
                 now=previous.now if previous else now, all_history=all_history,
@@ -10645,7 +10645,7 @@ def worker_changes(stage_dir: str, worker: Worker, now: float) -> WorkerChanges 
             value = _co_folder_changes(os.path.join(stage_dir, worker.name))
         _co_changes_cache[key] = (mono, value)
         return value
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable worktree means no change list, never a crash
         return None
 
 
@@ -19007,7 +19007,7 @@ def render_frame(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, st
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
         lines = tut_overlay(lines, ui, cols, rows)   # the station pages are drawn here, also in the tutorial
-    except Exception:   # a render bug must never take the dashboard down
+    except Exception:  # noqa: BLE001 - a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
     _rd_publish_hits(ui)
@@ -21018,7 +21018,7 @@ def render_global(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: floa
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
         lines = tut_overlay(lines, ui, cols, rows)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
     _rd_publish_hits(ui)
@@ -21779,7 +21779,7 @@ class StateCache:
                     value = self._payload_fn()
                     if not isinstance(value, dict): raise TypeError("payload_fn must return a dict")
                     self._value = copy.deepcopy(value); self._updated = time.monotonic()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - the state cache serves the last good value on any payload error
                     print(f"station: state refresh failed: {exc}", file=sys.stderr)
                     if self._value is None: return {}
                     errors = self._value.setdefault("errors", [])
@@ -21820,7 +21820,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
         def _json(self, status, value):
             raw = json.dumps(value, ensure_ascii=False).encode(); self._send(status, raw, "application/json")
         def _api_json(self, value):
-            body, etag = _canonical(value)
+            _body, etag = _canonical(value)
             headers = [("ETag", etag), ("Vary", "Accept-Encoding")]
             request_headers = getattr(self, "headers", {})
             if request_headers.get("If-None-Match") == etag:
@@ -21867,7 +21867,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
                         return self._send(404, b"Not found", "text/plain; charset=utf-8")
                     return self._api_json(result)
                 self._send(404, b"Not found", "text/plain; charset=utf-8")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a request must get a 500, never kill the server
                 print(f"station: request failed: {exc}", file=sys.stderr); self._send(500, b"Internal server error", "text/plain; charset=utf-8")
         def do_POST(self):
             try:
@@ -21886,7 +21886,7 @@ def run_serve(payload_fn, detail_fn, stage_fn=None, *, host="127.0.0.1", port=87
                 if path not in {s.get("path") for s in cache.get().get("stages", [])}: return self._send(404, b"Not found", "text/plain; charset=utf-8")
                 result = control_fn(path, action); cache.expire()
                 return self._json(200, {"ok": True, **result})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a request must get a 500, never kill the server
                 print(f"station: request failed: {exc}", file=sys.stderr); self._send(500, b"Internal server error", "text/plain; charset=utf-8")
         def log_message(self, fmt, *args): print(f"station: {self.address_string()} - {fmt % args}", file=sys.stderr)
     try: server = ThreadingHTTPServer((host, port), Handler)
@@ -23326,7 +23326,7 @@ def _ap_collector_loop(collector: Collector | GlobalCollector, shared: _ap_Share
             all_history = shared.all_history
         try:
             snap = collector.snapshot(all_history=all_history, quick=True) if quick else collector.snapshot(all_history=all_history)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a collector crash is shown in the UI, the loop must keep running
             with shared.lock:
                 shared.error = f"{type(exc).__name__}: {exc}"
         else:
@@ -23352,7 +23352,7 @@ def _ap_load_detail(ui: UIState, collector: Collector, snap: Snapshot | None, er
         return
     try:
         ui.detail_text = list(collector.detail(snap.workers[ui.sel].name, ui.tab))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a detail read error is shown in the view, not raised
         ui.detail_text = [f"error: {type(exc).__name__}: {exc}"]
     if not ui.detail_text and error:
         ui.detail_text = [f"collector error: {error}"]
@@ -23364,7 +23364,7 @@ def _ap_load_global_detail(ui: UIState, collector: GlobalCollector, path: str, n
         return
     try:
         ui.detail_text = list(collector.detail(path, name, ui.tab))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a detail read error is shown in the view, not raised
         ui.detail_text = [f"error: {type(exc).__name__}: {exc}"]
 
 
@@ -23441,7 +23441,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
         ui.glevel, ui.glevel_all = _ap_load_levels()
         if tutorial:
             ui.demo = True
-            tut_start(ui, lambda: [])
+            tut_start(ui, list)
         saved_levels = (dict(ui.glevel), ui.glevel_all)
         prev_lines: list[str] | None = None
         prev_snap: Snapshot | None = None
@@ -23571,7 +23571,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
             else:
                 try:
                     lines = render_frame(snap, ui, cols, rows, now)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - a render bug must not kill the TUI
                     lines = [_wd_trunc(f"render error: {type(exc).__name__}: {exc}", cols)]
             if error and (gs is not None if global_mode else snap is not None) and lines:
                 lines[-1] = _wd_c(_wd_trunc(f"collector error: {error}", cols), _wd_C_RED)
@@ -23661,7 +23661,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                             _ap_load_page(ui, stage, None, snap, now)
                     elif action == "load_detail" and not global_mode:
                         _ap_load_detail(ui, collector, snap, error)
-    except Exception:
+    except Exception:  # noqa: BLE001 - top-level TUI guard: keep the traceback, then clean up in finally
         trace = traceback.format_exc()
     finally:
         if global_mode and expand_save_at:
@@ -23987,7 +23987,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         try:
             collector.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - a failing close on exit must not mask the result
             pass
 
 

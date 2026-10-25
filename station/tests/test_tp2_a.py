@@ -5,12 +5,12 @@ import os
 import unittest
 from unittest.mock import patch
 
-from model import Snapshot, UIState
-from render import render_global, render_frame
 from test_overview_nav import fixture
 from test_usageview import accounts, openrouter
-from widgets import _wd_SGR_RE
 
+from model import Snapshot, UIState
+from render import render_frame, render_global
+from widgets import _wd_SGR_RE
 
 NOW = 1_760_050_000.0
 

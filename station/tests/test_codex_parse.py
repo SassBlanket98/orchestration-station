@@ -127,9 +127,9 @@ class CodexParseTests(unittest.TestCase):
         self.assertEqual(
             _texts(state, "tool", "shell"),
             [
-                "/usr/bin/bash -lc \"cat > /tmp/make_quiz_data.py <<'PY' import json "
-                "from pathlib import Path PY python /tmp/make_quiz_data.py "
-                "python -m json.tool questions.json > /dev/null \"",
+                ("/usr/bin/bash -lc \"cat > /tmp/make_quiz_data.py <<'PY' import json "
+                 "from pathlib import Path PY python /tmp/make_quiz_data.py "
+                 "python -m json.tool questions.json > /dev/null \""),
             ],
         )
         self.assertEqual(state.tool_counts.get("shell"), 1)

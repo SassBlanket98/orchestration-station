@@ -1,7 +1,7 @@
 """Control center: the one-line hint row at the bottom of the frame. Pure; imports model and widgets only."""
 from __future__ import annotations
 
-from ccpane import PANE_TABS, PANE_TAB_ARROWS
+from ccpane import PANE_TAB_ARROWS
 from model import UIState
 from widgets import (
     _wd_c,
