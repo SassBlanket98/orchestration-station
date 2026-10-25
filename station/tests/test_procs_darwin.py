@@ -167,14 +167,20 @@ class ScanCacheTests(_ProcsCase):
             scan = procs_darwin._pd_scan()
         self.assertEqual(scan[412], (1, 123, 0, _start("Fri Oct 25 00:12:34 2026"), 3 + 0x10000))
 
-    def test_two_calls_within_one_second_run_ps_once(self) -> None:
+    def test_per_pid_reads_reuse_the_scan(self) -> None:
         with patch("procs_darwin.subprocess.run", side_effect=_fake_run) as run:
-            procs_darwin._pd_scan()
             procs_darwin._pd_scan()
             self.assertEqual(procs_darwin._pd_resident(412, 4096), 1024 * 1024)
             self.assertEqual(procs_darwin._pd_argv(412), ["-zsh"])
             self.assertEqual(procs_darwin._pd_stat(530)[2], "Visual")
         self.assertEqual(run.call_count, 1)
+
+    def test_each_scan_reads_ps_again(self) -> None:
+        # a process started since the last scan must show up, even inside the TTL
+        with patch("procs_darwin.subprocess.run", side_effect=_fake_run) as run:
+            procs_darwin._pd_scan()
+            procs_darwin._pd_scan()
+        self.assertEqual(run.call_count, 2)
 
     def test_stale_cache_is_rescanned(self) -> None:
         with patch("procs_darwin.subprocess.run", side_effect=_fake_run) as run:
