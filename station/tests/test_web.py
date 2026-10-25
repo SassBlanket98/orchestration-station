@@ -77,7 +77,7 @@ class WebServerTests(unittest.TestCase):
         gs = GlobalSnapshot(stages=[solo])
         payload = webdata.global_payload(gs)
 
-        rc, request = _serve(lambda: payload, webdata.worker_detail,
+        _rc, request = _serve(lambda: payload, webdata.worker_detail,
                              stage=lambda path: webdata.stage_payload(gs, path))
         status, _, body = request("/api/stage?path=%2Fp%2F.stage%237")
         self.assertEqual((status, json.loads(body)["workers_full"]), (200, []))
@@ -105,7 +105,7 @@ class WebServerTests(unittest.TestCase):
         def boom():
             raise RuntimeError("boom")
 
-        rc, request = _serve(boom, lambda s, n: {}, interval=0.05)
+        _rc, request = _serve(boom, lambda s, n: {}, interval=0.05)
         self.assertEqual(request("/api/state")[0], 503)
 
     def test_bind_error_returns_1(self):

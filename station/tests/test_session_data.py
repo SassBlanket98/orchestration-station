@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 import collect
@@ -116,7 +116,7 @@ class SessionData(unittest.TestCase):
         lead = collect._co_Lead(43, "claude", "live", cwd, NOW - 10)
         with mock.patch.object(collect, "_co_environ", return_value={"CLAUDE_CONFIG_DIR": config}):
             info = collect._co_lead_session(self.stage, lead)
-        self.assertEqual(info["activity"], datetime(2026, 10, 11, 3, 40, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(info["activity"], datetime(2026, 10, 11, 3, 40, tzinfo=UTC).timestamp())
         self.assertGreater(os.stat(transcript).st_mtime, info["activity"])
         with open(transcript, "w", encoding="utf-8") as fh:   # no user/assistant entry: mtime fallback
             fh.write(json.dumps({"type": "custom-title", "customTitle": "x"}) + "\n")

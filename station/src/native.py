@@ -55,7 +55,7 @@ def _nv_time(value: object) -> float:
         return float(value) / 1000 if value > 100_000_000_000 else float(value)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(value).timestamp()
         except ValueError:
             pass
     return 0.0

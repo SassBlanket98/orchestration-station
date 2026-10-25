@@ -16,7 +16,7 @@ The station is a set of modules in `station/src/`. `build.py` joins them into on
 cd station
 python3 build.py        # writes station/station
 tests/run.sh            # unit tests
-uvx ruff check src tests build.py
+uvx ruff@0.17.2 check src tests build.py
 ```
 
 Add or update tests in `station/tests/` for any behaviour you change. New lint findings are not accepted.

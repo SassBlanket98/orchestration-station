@@ -2471,7 +2471,7 @@ def render_frame(snap: Snapshot, ui: UIState, cols: int, rows: int, t: float, st
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
         lines = tut_overlay(lines, ui, cols, rows)   # the station pages are drawn here, also in the tutorial
-    except Exception:   # a render bug must never take the dashboard down
+    except Exception:  # noqa: BLE001 - a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
     _rd_publish_hits(ui)
@@ -4482,7 +4482,7 @@ def render_global(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: floa
         if ui.help:
             lines = _rd_help_overlay(lines, cols, rows, ui)
         lines = tut_overlay(lines, ui, cols, rows)
-    except Exception:
+    except Exception:  # noqa: BLE001 - a render bug must never take the dashboard down
         ui.hits = []
         lines = [_wd_c("render error", _wd_C_RED)]
     _rd_publish_hits(ui)

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import unittest
 
-import cchint
-from ccpane import PANE_TABS, PANE_TAB_ARROWS, pane_tab_bar, pane_tab_digit, pane_lines
 from test_cc_pane import NOW, _lead, _plain, _worker
+
+import cchint
+from ccpane import PANE_TAB_ARROWS, PANE_TABS, pane_lines, pane_tab_bar, pane_tab_digit
 from widgets import _wd_C_MUTED, _wd_C_TEXT, _wd_sgr
 
 
