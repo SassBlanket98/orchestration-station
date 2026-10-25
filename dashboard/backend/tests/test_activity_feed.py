@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from stagewatch.activity_feed import ActivityFeed
 
 
@@ -185,3 +187,15 @@ def test_caps_results_at_forty_live_stages(tmp_path: Path) -> None:
     result = ActivityFeed(home=home).get(stages)
 
     assert len(result) == 40
+
+
+def test_codex_index_builds_right_after_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # monotonic() starts near 0 on a fresh machine; the first lookup must still scan.
+    home = tmp_path / "home"
+    rollout = home / ".codex" / "sessions" / "rollout-2026-10-24T10-00-00-thread-9.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("")
+    monkeypatch.setattr("stagewatch.activity_feed.time.monotonic", lambda: 5.0)
+    assert ActivityFeed(home=home)._find_codex("thread-9") == rollout
