@@ -20,7 +20,7 @@ def stage(sid: str, root: str = "/p/a", tag: str = "CC·W", parent: str = "", st
 
 class ProjectGroups(unittest.TestCase):
     def test_project_groups_mix_harnesses_and_always_have_headings(self) -> None:
-        gs = GlobalSnapshot(now=NOW, stages=[stage("one"), stage("two", tag="CDX"), stage("three", "/p/b", "")])
+        gs = GlobalSnapshot(now=NOW, stages=[stage("one"), stage("two", tag="Codex"), stage("three", "/p/b", "")])
         rows = global_rows(gs, UIState())
         self.assertEqual([name for _, kind, name in rows if kind == "group"], ["p:/p/a", "p:/p/b"])
         ui = UIState(gsel=0)
@@ -30,13 +30,13 @@ class ProjectGroups(unittest.TestCase):
         self.assertEqual(len([k for _, k, _ in global_rows(gs, ui) if k == "stage"]), 3)
 
     def test_tags_app_and_now_are_on_one_session_row(self) -> None:
-        st = stage("desk", tag="CDX")
+        st = stage("desk", tag="Codex")
         st.app, st.tmux = True, "secret-tmux-name"
         st.doing = [(NOW, "Edit renderer")]
         gs = GlobalSnapshot(now=NOW, stages=[st])
         lines = plain_lines(gs, UIState())
         row = next(line for line in lines if "desk" in line)
-        self.assertIn("CDX", row)
+        self.assertIn("Codex", row)
         self.assertNotIn(st.tmux, "\n".join(lines))
 
     def test_launch_chain_has_multiple_levels_and_filter_removes_parent(self) -> None:

@@ -28,7 +28,11 @@ def _cxk_stage(gs: GlobalSnapshot, path: str) -> Stage | None:
 def _cxk_worker(stage: Stage, name: str) -> Worker | None:
     """The worker called `name` in the stage's snapshot, or None."""
     workers = (stage.snap.workers if stage.snap is not None else []) or []
-    return next((wk for wk in workers if wk.name == name), None)
+    keyed = next((wk for wk in workers if wk.key == name), None)
+    if keyed:
+        return keyed
+    matches = [wk for wk in workers if wk.name == name]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _cxk_row(gs: GlobalSnapshot, sel: tuple[str, str, str] | None) -> tuple[Stage | None, Worker | None, str]:
@@ -62,7 +66,7 @@ def _cxk_key_target(gs: GlobalSnapshot, row_key: str) -> tuple[Stage | None, Wor
 
 def _cxk_row_key(stage: Stage, worker: Worker | None) -> str:
     """The row key a confirm stores: the stage path, then the worker name ("" for a lead row)."""
-    return f"{stage.path}|{worker.name if worker is not None else ''}"
+    return f"{stage.path}|{worker.key if worker is not None else ''}"
 
 
 def _cxk_identity(gs: GlobalSnapshot, row_key: str) -> tuple[int | None, int | None, str, str] | None:

@@ -198,6 +198,9 @@ class HeadlessGrace(unittest.TestCase):
         for name, pid in (("deepseek-taskcost", "50"), ("haiku-a", "51"), ("junk", "x")):
             with open(os.path.join(stage, name + ".pid"), "w", encoding="utf-8") as fh:
                 fh.write(pid)
+            if pid.isdigit():
+                with open(os.path.join(stage, name + ".model"), "w", encoding="utf-8") as fh:
+                    fh.write("test-model")
         self.assertEqual(collect._co_stage_pid_names(stage), {50: "deepseek-taskcost", 51: "haiku-a"})
 
     def test_an_exited_run_stays_as_done_then_goes(self) -> None:

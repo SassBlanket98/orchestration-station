@@ -83,6 +83,10 @@ class Overrides(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
             os.utime(path, (NOW - age, NOW - age))
+        model_path = os.path.join(self.stage, "w.model")
+        with open(model_path, "w", encoding="utf-8") as fh:
+            fh.write("test-model")
+        os.utime(model_path, (NOW - age, NOW - age))
 
     def make_active(self) -> None:
         self.add_lead(10, ["claude"], self.project())

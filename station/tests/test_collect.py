@@ -79,6 +79,7 @@ class Base(unittest.TestCase):
     def add_dead(self, name: str, start: float, end: float | None = None,
                  log_text: str = "line\n") -> None:
         self.write(f"{name}.pid", str(DEAD_PID), mtime=start)
+        self.write(f"{name}.session", "{}", mtime=start)
         self.write(f"{name}.log", log_text, mtime=start if end is None else end)
 
     def anchor(self, start: float) -> None:
@@ -153,6 +154,7 @@ class TestWorkers(Base):
     def test_dead_done_review(self) -> None:
         start = time.time() - 500
         self.write("reviewkeeper.pid", str(DEAD_PID), mtime=start)
+        self.write("reviewkeeper.session", "{}", mtime=start)
         self.write("reviewkeeper.log", "review output\n", mtime=start)
         worker = self.one(self.collector().snapshot(), "reviewkeeper")
         self.assertEqual(worker.state, DONE)
@@ -384,8 +386,10 @@ class TestOrderingAndTotals(Base):
         self.write("lb.log", "x\n", mtime=now)
         self.write("briefs/lb.md", "# lb\n")
         self.write("d1.pid", str(DEAD_PID), mtime=now - 120)
+        self.write("d1.session", "{}", mtime=now - 120)
         self.write("d1.log", "x\n", mtime=now - 60)
         self.write("d2.pid", str(DEAD_PID), mtime=now - 90)
+        self.write("d2.session", "{}", mtime=now - 90)
         self.write("d2.log", "x\n", mtime=now - 30)
         names = [w.name for w in self.collector().snapshot(now=now).workers]
         self.assertEqual(names, ["la", "lb", "d2", "d1"])
@@ -505,6 +509,7 @@ class TestRobustness(Base):
         now = time.time()
         for i in range(150):
             self.write(f"dead{i}.pid", str(DEAD_PID), mtime=now - 600)
+            self.write(f"dead{i}.session", "{}", mtime=now - 600)
             self.write(f"dead{i}.log", "x\n" * 5, mtime=now - 600)
         for i in range(5):
             self.write(f"live{i}.pid", str(os.getpid()), mtime=now)
@@ -543,6 +548,7 @@ class TestLogRewrite(Base):
     def test_append_keeps_steps(self) -> None:
         now = time.time()
         self.write("ap.pid", str(DEAD_PID), mtime=now - 300)
+        self.write("ap.session", "{}", mtime=now - 300)
         self.write("ap.log", "one\n", mtime=now - 300)
         proc = self.collector()
         self.one(proc.snapshot(now=now), "ap")
@@ -668,13 +674,15 @@ class TestServices(Base):
         child = self.spawn_sleep()
         now = time.time()
         self.write("w4.pid", str(child.pid), mtime=now)
+        self.write("w4.model", "test-model")
         self.write("w4/REPORT.md", "# r\n")
         snapshot = self.collector().snapshot(now=now)
         self.assertEqual(snapshot.services, [])
         self.one(snapshot, "w4")
 
-    def test_dead_pid_without_brief_is_worker(self) -> None:
+    def test_model_companion_without_brief_is_worker(self) -> None:
         self.write("dead.pid", str(DEAD_PID), mtime=time.time() - 500)
+        self.write("dead.model", "test-model")
         snapshot = self.collector().snapshot()
         self.assertEqual(snapshot.services, [])
         self.assertEqual(self.one(snapshot, "dead").state, NOREPORT)
@@ -752,6 +760,7 @@ class TestServiceDetection(Base):
         time.sleep(0.05)
         now = time.time()
         self.write("agent.pid", str(child.pid), mtime=now)
+        self.write("agent.model", "test-model")
         self.write("agent.log", "x\n", mtime=now)
         snapshot = self.collector().snapshot(now=now)
         self.assertEqual(snapshot.services, [])

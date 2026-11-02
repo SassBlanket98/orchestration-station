@@ -104,7 +104,7 @@ class TestAttachExecutions(unittest.TestCase):
 
         collect._co_attach_executions([row])
 
-        self.assertEqual(row.tag, "CDX")
+        self.assertEqual(row.tag, "Codex")
         self.assertEqual(row.lead_kind, "codex")
 
     def test_synthetic_root_inherits_member_identity_for_leftover_tag(self) -> None:

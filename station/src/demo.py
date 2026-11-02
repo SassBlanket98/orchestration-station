@@ -540,7 +540,7 @@ _dm_GLOBAL_ROWS = (
     # (session id, label, session name, tag, harness, model, kind, state, started offset, phase, stream, lead pid, resume command)
     ("demo-lead", _dm_TITLE, "ship the api", "CC·P", "claude", "sonnet-5.5", "claude", "active", -1500.0, "build", "api-routes", 48100, ""),
     (None, _dm_SOLO_LABEL, "side tools", "CC·P", "claude", "haiku-5.5", "claude", "active", _dm_SOLO_SINCE, "build", "side-tools", 48902, ""),
-    ("demo-docs", "docs-site", "docs pass", "CDX", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
+    ("demo-docs", "docs-site", "docs pass", "Codex", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
     ("demo-old", "old-spike", "old spike", "CC·P", "claude", "opus-5.5", "claude", "closed", -20000.0, "build", "spike", None, "claude --resume demo-old"),
 )
 

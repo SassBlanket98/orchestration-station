@@ -337,7 +337,7 @@ def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -
         return ""
     if ui.gpage in ("openclaw", "wk"):   # the ops pages: Esc goes back to the tree; the page's module takes the rest
         stage = next((s for s in gs.stages if s.path == ui.gstage), None)
-        wk = next((x for x in stage.snap.workers if x.name == ui.gworker), None) if stage is not None else None
+        wk = next((x for x in stage.snap.workers if x.key == ui.gworker), None) if stage is not None else None
         if key in ("esc", "left", "backspace") or stage is None or (ui.gpage == "wk" and wk is None):
             back = ui.gpage == "wk" and stage is not None and wk is not None and ui.gsess   # back to the session page
             ui.gpage, ui.gturn, ui.gworker, ui.scroll, ui.gsess = ("sess" if back else ""), "", "", 0, False
@@ -464,7 +464,7 @@ def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -
     elif key in ("o", "space") and kind == "stage":   # double click or o on a session: its overview page
         ui.gpage, ui.gstage, ui.gworker, ui.scroll, ui.sel, ui.gsess = "sess", path, "", 0, 0, False
         stage = next((s for s in gs.stages if s.path == path), None)
-        ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+        ui.expanded = {wk.key for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
         ui.pinned.clear()
     elif key in ("o", "space") and kind != "more":
         _ap_open_station(ui, gs, path, name if kind == "worker" else "")
@@ -478,10 +478,10 @@ def _ap_open_station(ui: UIState, gs: GlobalSnapshot, path: str, worker: str = "
     ui.view, ui.tab, ui.follow = "overview", "live", True
     ui.pscroll.clear()
     stage = next((s for s in gs.stages if s.path == path), None)
-    ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+    ui.expanded = {wk.key for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
     ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
     if stage is not None and worker:
-        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == worker), 0)
+        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.key == worker), 0)
 
 
 def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[str, str, str]]) -> None:
@@ -501,12 +501,12 @@ def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[
 def _ap_wk_action(ui: UIState, gs: GlobalSnapshot, stage: Stage, wk: Worker, action: str) -> str:
     """What the worker page asked for: Files, or the station page on that worker with its brief or report tab."""
     if action == "files":
-        return _ap_open_files(ui, gs, stage.path, wk.name)
+        return _ap_open_files(ui, gs, stage.path, wk.key)
     if action in ("brief", "report"):
-        names = [x.name for x in stage.snap.workers]
+        names = [x.key for x in stage.snap.workers]
         ui.gpage, ui.gstage, ui.gworker, ui.scroll, ui.detail_text = "stage", stage.path, "", 0, []
         ui.view, ui.tab, ui.follow = "detail", action, True
-        ui.sel = names.index(wk.name) if wk.name in names else 0
+        ui.sel = names.index(wk.key) if wk.key in names else 0
         ui.panel = ""
         ui.pscroll.clear()
         return "load_detail"
@@ -518,7 +518,7 @@ def _ap_open_files(ui: UIState, gs: GlobalSnapshot, path: str, name: str) -> str
     stage = next((s for s in gs.stages if s.path == path), None)
     if stage is None:
         return ""
-    names = [wk.name for wk in stage.snap.workers]
+    names = [wk.key for wk in stage.snap.workers]
     ui.gpage, ui.gstage, ui.view, ui.scroll, ui.detail_text = "stage", path, "files", 0, []
     ui.sel = names.index(name) if name in names else 0
     ui.panel = ""
@@ -713,9 +713,9 @@ def _ap_global_validate_page(ui: UIState, gs: GlobalSnapshot, worker_name: str =
     stage = next((item for item in gs.stages if item.path == ui.gstage), None)
     valid = stage is not None
     if ui.gpage == "worker" and stage is not None:
-        valid = any(worker.name == worker_name for worker in stage.snap.workers)
+        valid = any(worker.key == worker_name for worker in stage.snap.workers)
     if ui.gpage == "wk" and stage is not None:
-        valid = any(worker.name == ui.gworker for worker in stage.snap.workers)
+        valid = any(worker.key == ui.gworker for worker in stage.snap.workers)
     if ui.gpage == "sess" and stage is not None:
         valid = True
     if not valid:
@@ -845,13 +845,14 @@ def _ap_page_key(ui: UIState, key: str, rows: int) -> str:
 def _ap_load_page(ui: UIState, stage_dir: str, stage: Stage | None, snap: Snapshot | None, now: float) -> None:
     """Read what the open page shows: once on open and on r, never per frame. The cost page is drawn from the snapshot."""
     if ui.demo:   # the tutorial's rows have no lead.json, stream file or git to read
-        name = _ap_sel_name(ui, snap) if ui.view == "files" else ""
+        worker = snap.workers[ui.sel] if snap is not None and not _rd_panel_sel(snap, ui) and 0 <= ui.sel < len(snap.workers) else None
+        name = worker.name if ui.view == "files" and worker else ""
         ui.detail_text = demo_page_lines(ui.view, name)
     elif ui.view == "lead":
         ui.detail_text = lead_page(stage_dir, stage, now)
     elif ui.view == "files":
-        name = _ap_sel_name(ui, snap)
-        worker = next((wk for wk in snap.workers if wk.name == name), None) if snap is not None else None
+        key = _ap_sel_name(ui, snap)
+        worker = next((wk for wk in snap.workers if wk.key == key), None) if snap is not None else None
         ui.detail_text = files_page(stage_dir, worker)
 
 
@@ -1050,27 +1051,27 @@ def _ap_go(ui: UIState, stop: str) -> None:
 
 def _ap_toggle_expanded(ui: UIState, wk: Worker) -> None:
     """Enter on a worker: open or close its card or summary. Opening a finished worker is your own choice, so pin it."""
-    if wk.name in ui.expanded:
-        ui.expanded.discard(wk.name)
-        ui.pinned.discard(wk.name)
+    if wk.key in ui.expanded:
+        ui.expanded.discard(wk.key)
+        ui.pinned.discard(wk.key)
     else:
-        ui.expanded.add(wk.name)
+        ui.expanded.add(wk.key)
         if wk.state not in LIVE_STATES:
-            ui.pinned.add(wk.name)
+            ui.pinned.add(wk.key)
 
 
 def _ap_sync_expanded(ui: UIState, prev: Snapshot | None, snap: Snapshot) -> None:
     """Keep the open set in step with the workers. A worker that starts opens; one that finishes closes unless the user pinned it."""
-    before = {w.name: w.state for w in prev.workers} if prev is not None else {}
+    before = {w.key: w.state for w in prev.workers} if prev is not None else {}
     for wk in snap.workers:
-        was = before.get(wk.name)
+        was = before.get(wk.key)
         if wk.state in LIVE_STATES:
             if was not in LIVE_STATES:
-                ui.expanded.add(wk.name)
-                ui.pinned.discard(wk.name)
-        elif was in LIVE_STATES and wk.name not in ui.pinned:
-            ui.expanded.discard(wk.name)
-    names = {w.name for w in snap.workers}
+                ui.expanded.add(wk.key)
+                ui.pinned.discard(wk.key)
+        elif was in LIVE_STATES and wk.key not in ui.pinned:
+            ui.expanded.discard(wk.key)
+    names = {w.key for w in snap.workers}
     ui.expanded &= names
     ui.pinned &= names
     ui.group_open &= {group.key for group in snap.groups} | {"*"}
@@ -1216,10 +1217,10 @@ def _ap_pointer_keys(ui: UIState, key: str, gs: GlobalSnapshot | None, snap: Sna
         if station is None:
             return []
         if action == "select":
-            names = [wk.name for wk in station.workers]
-            if target not in names:
+            keys = [wk.key for wk in station.workers]
+            if target not in keys:
                 return []
-            stop = _rd_wstop(names.index(target))
+            stop = _rd_wstop(keys.index(target))
         else:
             stop = _RD_GROUP + target
         stops = _rd_stops(station, ui)
@@ -1301,26 +1302,26 @@ def _ap_follow_selection(ui: UIState, name: str, snap: Snapshot) -> str:
         ui.sel = 0
         return ""
     for i, w in enumerate(workers):
-        if w.name == name:
+        if w.key == name:
             ui.sel = i
             return name
     ui.sel = min(max(ui.sel, 0), len(workers) - 1)
-    return workers[ui.sel].name
+    return workers[ui.sel].key
 
 
 def _ap_sel_name(ui: UIState, snap: Snapshot | None) -> str:
     """Name of the worker under the cursor; "" on a panel row or when no worker is there."""
     if snap is None or _rd_panel_sel(snap, ui) or not 0 <= ui.sel < len(snap.workers):
         return ""
-    return snap.workers[ui.sel].name
+    return snap.workers[ui.sel].key
 
 
 def _ap_started(prev: Snapshot | None, new: Snapshot) -> bool:
     """True when a live worker shows up that the previous snapshot did not have."""
     if prev is None:
         return False
-    seen = {w.name for w in prev.workers}
-    return any(w.state in LIVE_STATES and w.name not in seen for w in new.workers)
+    seen = {w.key for w in prev.workers}
+    return any(w.state in LIVE_STATES and w.key not in seen for w in new.workers)
 
 
 def _ap_follow_snapshot(ui: UIState, snap: Snapshot, sel_name: str, started: bool) -> str:
@@ -1358,29 +1359,29 @@ def _ap_detect_events(prev: Snapshot | None, new: Snapshot) -> list[_ap_Event]:
     if prev is None:
         return []
     events: list[_ap_Event] = []
-    old = {w.name: w for w in prev.workers}
+    old = {w.key: w for w in prev.workers}
     for w in new.workers:
-        before = old.get(w.name)
+        before = old.get(w.key)
         if before is None or before.state not in LIVE_STATES:
             continue
         text = w.title or (w.summary[0] if w.summary else "")
         if w.state == DONE:
-            events.append(_ap_Event("done", w.name, f"✔ {w.name} finished", text, "normal"))
+            events.append(_ap_Event("done", w.key, f"✔ {w.name} finished", text, "normal"))
         elif w.state == FAILED:
-            events.append(_ap_Event("failed", w.name, f"✖ {w.name} failed", text, "critical"))
+            events.append(_ap_Event("failed", w.key, f"✖ {w.name} failed", text, "critical"))
         elif w.state == NOREPORT:
             summary = f"· {w.name} finished without a report"
-            events.append(_ap_Event("noreport", w.name, summary, text, "low"))
+            events.append(_ap_Event("noreport", w.key, summary, text, "low"))
         elif w.state in LIVE_STATES and w.start > 0 and (eta := _ap_eta(new, w)) is not None:
             if prev.now - w.start < eta <= new.now - w.start:
                 body = f"expected about {int(eta // 60)}m {int(eta % 60):02d}s, still running"
-                events.append(_ap_Event("overdue", w.name, f"⏰ {w.name} is past its estimated time", body, "normal"))
+                events.append(_ap_Event("overdue", w.key, f"⏰ {w.name} is past its estimated time", body, "normal"))
             if w.state == STALLED and before.state != STALLED:
                 body = f"no output for {int(w.quiet_s // 60)} min"
-                events.append(_ap_Event("stalled", w.name, f"▲ {w.name} stalled", body, "critical"))
+                events.append(_ap_Event("stalled", w.key, f"▲ {w.name} stalled", body, "critical"))
         elif w.state == STALLED and before.state != STALLED:
             body = f"no output for {int(w.quiet_s // 60)} min"
-            events.append(_ap_Event("stalled", w.name, f"▲ {w.name} stalled", body, "critical"))
+            events.append(_ap_Event("stalled", w.key, f"▲ {w.name} stalled", body, "critical"))
     before_p1 = {r.name: sum(1 for f in r.findings if f.prio == 1) for r in prev.reviews}
     for r in new.reviews:
         p1 = [f for f in r.findings if f.prio == 1]
@@ -1699,7 +1700,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                         prev_global = gs
                         if ui.gpage == "worker" and stage_data is not None:
                             ui.sel = next((i for i, worker in enumerate(stage_data.snap.workers)
-                                           if worker.name == global_worker_name), 0)
+                                           if worker.key == global_worker_name), 0)
                             if ui.view == "detail" and ui.tab != "live":
                                 _ap_load_global_detail(ui, collector, ui.gstage, global_worker_name)
                         elif ui.gpage == "stage" and stage_data is not None:
@@ -1743,7 +1744,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                 elif stage_snap is not None and ui.gpage in ("worker", "stage"):
                     if ui.gpage == "worker" and ui.view == "detail":
                         ui.sel = next((i for i, worker in enumerate(stage_snap.workers)
-                                       if worker.name == global_worker_name), 0)
+                                       if worker.key == global_worker_name), 0)
                     lines = render_frame(stage_snap, ui, cols, rows, now, _ap_global_stage(gs, ui))
                 else:
                     lines = render_global(gs, ui, cols, rows, now)

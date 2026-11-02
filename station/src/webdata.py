@@ -126,7 +126,7 @@ def _work_dict(work: WorkState | None) -> dict | None:
 def _worker_dict(worker: Worker, now: float | None = None) -> dict:
     """One ``<worker>`` element; the same key set for every state."""
     log = worker.log
-    return {
+    result = {
         "name": worker.name,
         "state": worker.state,
         "title": worker.title,
@@ -154,7 +154,7 @@ def _worker_dict(worker: Worker, now: float | None = None) -> dict:
         },
         "cost": log.cost,
         "tool_counts": {cat: log.tool_counts.get(cat, 0) for cat in TOOL_CATS},
-        "tool_bins": _tool_bins(log.tool_pulses, now) if now is not None and _log_known(log) else None,
+        "tool_bins": _tool_bins(log.tool_pulses, now) if now is not None and _log_known(log) and not (worker.execution_id and not log.path) else None,   # a native row has a harness but no log to read
         "ctx_window": log.ctx_window,
         "level_tag": _text(worker.level_tag),
         "flags": sorted(worker.flags),
@@ -166,6 +166,8 @@ def _worker_dict(worker: Worker, now: float | None = None) -> dict:
         "brief_text": list(worker.brief_text),
         "result_text": list(worker.result_text),
     }
+    result.update(key=worker.key, stage=worker.home, parent_key=worker.parent_key)
+    return result
 
 
 # normalized execution identity, additive to the v2 worker element (None-free strings/bools)
@@ -273,8 +275,19 @@ def _milestones(snap: Snapshot) -> list[dict]:
 
 
 def _groups(snap: Snapshot) -> list[dict]:
-    return [
-        {
+    by_name: dict[str, list[Worker]] = {}
+    for worker in snap.workers:
+        by_name.setdefault(worker.name, []).append(worker)
+    out = []
+    for group in snap.groups:
+        worker_keys = list(group.worker_keys)
+        members = []
+        if not worker_keys:
+            members = [by_name[name][0] for name in group.workers if len(by_name.get(name, [])) == 1]
+            if len(members) == len(group.workers):
+                worker_keys = [worker.key for worker in members]
+        stage_name = group.stage or (os.path.basename(os.path.normpath(members[0].home)) if members and members[0].home else "")
+        item = {
             "label": group.label,
             "workers": list(group.workers),
             "started": group.started,
@@ -284,8 +297,10 @@ def _groups(snap: Snapshot) -> list[dict]:
             "finished": group.finished,
             "current": group.current,
         }
-        for group in snap.groups
-    ]
+        if group.worker_keys or group.stage or any(worker.home for worker in members):
+            item.update(worker_keys=worker_keys, stage=stage_name)
+        out.append(item)
+    return out
 
 
 def _stage_dict(
@@ -405,7 +420,7 @@ def _summary_stage(stage: Stage, now: float) -> dict:
         tokens = worker["tokens"]
         total = tokens["ctx"] if tokens["ctx"] is not None else (
             None if any(tokens[k] is None for k in ("in", "out", "cache")) else sum(tokens[k] for k in ("in", "out", "cache")))
-        rows.append({key: worker[key] for key in ("name", "state", "model", "family", "harness", "job", "is_review", "has_report", "start", "end", "quiet_s", "errors", "cost", "goal", "tool_bins", "ctx_window", "level_tag", "flags", "failure", *_IDENTITY_KEYS, *_TREE_KEYS)} | {
+        rows.append({key: worker[key] for key in ("name", "state", "model", "family", "harness", "job", "is_review", "has_report", "start", "end", "quiet_s", "errors", "cost", "goal", "tool_bins", "ctx_window", "level_tag", "flags", "failure", "key", "stage", "parent_key", *_IDENTITY_KEYS, *_TREE_KEYS)} | {
             "title": (worker["title"] or "")[:120], "tokens_total": total,
         })
     full["workers"] = rows

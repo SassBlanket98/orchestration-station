@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from labels import display_model
+from labels import display_model, harness_label
 from model import Stage, Worker, WorkState
 from opsspark import _os_bins, _os_spark, _os_tools_spark, _os_why_line
 from opstree import _ot_tag
@@ -416,17 +416,24 @@ def _og_local(*values: str) -> bool:
 
 
 def _og_worker_harness(wk: Worker) -> str:
-    mapping = {"claude": "CC", "codex": "Codex", "opencode": "OCode", "cursor": "Cursr", "openclaw": "OClaw"}
-    return mapping.get((wk.log.harness or "").lower(), mapping.get(wk.family.lower(), "—"))
+    logged = (wk.log.harness or "").lower()
+    harness = (wk.harness if logged == "unknown" else logged) or wk.harness
+    harness = harness.lower()
+    if harness:
+        account = wk.account or ("openclaw" if harness == "openclaw" else "" if harness == "claude" else "personal")
+        return harness_label(harness, account) or "—"
+    return harness_label(wk.family.lower()) or "—"
 
 
 def _og_stage_harness(stage: Stage) -> str:
     if stage.tag:
         return stage.tag
     kind = (stage.lead_kind or "").lower()
-    for key, label in (("claude", "CC"), ("codex", "Codex"), ("opencode", "OCode"), ("cursor", "Cursr"), ("openclaw", "OClaw")):
+    for key in ("claude", "codex", "t3", "opencode", "cursor", "openclaw"):
         if key in kind:
-            return label
+            account = "work" if key == "claude" and "work" in kind else stage.account
+            account = account or ("openclaw" if key == "openclaw" else "" if key == "claude" else "personal")
+            return harness_label(key, account) or "—"
     return "OClaw" if stage.vitals else "—"
 
 

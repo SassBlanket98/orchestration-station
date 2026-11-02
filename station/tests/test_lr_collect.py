@@ -32,6 +32,7 @@ def write(path: str, text: str = "", mtime: float | None = None) -> None:
 def add_worker(stage: str, mtime: float, name: str = "w", pid: int = DEAD_PID) -> None:
     os.makedirs(os.path.join(stage, name), exist_ok=True)
     write(os.path.join(stage, name + ".pid"), str(pid), mtime)
+    write(os.path.join(stage, name + ".model"), "test-model", mtime)
     write(os.path.join(stage, name + ".log"), "", mtime)
 
 

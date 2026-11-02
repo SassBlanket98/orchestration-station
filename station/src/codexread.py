@@ -12,7 +12,10 @@ from model import CCCall
 from native import _nv_codex_counts, _nv_codex_window, _nv_lines, _nv_text, _nv_time
 
 # first user messages codex injects before the real prompt; skipped when looking for it (matched on the stripped start)
-INJECTED_PREFIXES = ("# AGENTS.md instructions", "<environment_context>", "<user_instructions>", "<permissions instructions>")
+INJECTED_PREFIXES = (
+    "# AGENTS.md instructions", "<INSTRUCTIONS>", "<environment_context>", "<permissions instructions>",
+    "<skills_instructions>", "<user_instructions>",
+)
 
 
 @dataclass
@@ -38,6 +41,7 @@ class CodexSession:
 
 _CX_KEEP = 64                     # cached files per reader; the oldest is dropped past this
 _CX_LINE_MAX = 16 * 1024 * 1024   # a rollout line longer than this is skipped, never parsed as a partial object
+_CX_NAME_PREFIX_MAX = 2 * 1024 * 1024
 _CX_CALL_MAX = 200                # newest tool calls kept
 _CX_PENDING_MAX = 500             # calls still waiting for their output
 _CX_LINES_MAX = 400               # prompt and system-prompt lines kept
@@ -82,6 +86,31 @@ def read_codex_session(path: str, now: float | None = None) -> CodexSession | No
         return replace(sess, prompt=list(sess.prompt), system_prompt=list(sess.system_prompt),
                        calls=[replace(call) for call in sess.calls])
     return None
+
+
+def read_codex_prompt_prefix(path: str, max_bytes: int = _CX_NAME_PREFIX_MAX) -> list[str]:
+    """Read only the rollout prefix needed to find its first real user prompt."""
+    state = _crd_state(str(path))
+    limit = max(0, min(max_bytes, _CX_NAME_PREFIX_MAX))
+    consumed = 0
+    try:
+        with Path(path).open("rb") as stream:
+            while consumed < limit and not state["prompt_seen"]:
+                raw = stream.readline(min(limit - consumed, _CX_LINE_MAX + 1))
+                if not raw:
+                    break
+                consumed += len(raw)
+                if not raw.endswith(b"\n") or len(raw) > _CX_LINE_MAX:
+                    break
+                try:
+                    obj = json.loads(raw)
+                except (ValueError, UnicodeError, RecursionError):
+                    continue
+                if isinstance(obj, dict):
+                    _crd_item(state, obj)
+    except OSError:
+        return []
+    return list(state["sess"].prompt) if state["valid"] else []
 
 
 def _crd_state(path: str) -> dict:
@@ -241,7 +270,8 @@ def _crd_prompt(state: dict, payload: dict) -> None:
         return
     text = _nv_text(_crd_content(payload.get("content")))
     stripped = text.strip()
-    if not stripped or stripped.startswith(INJECTED_PREFIXES):
+    if not stripped or stripped.startswith("# AGENTS.md instructions") or any(
+            marker in stripped for marker in INJECTED_PREFIXES[1:]):
         return
     sess.prompt = _crd_lines(text)
     sess.name = _crd_name(sess.prompt, sess.session_id)

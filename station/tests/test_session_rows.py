@@ -114,9 +114,9 @@ class SessionRow(unittest.TestCase):
         self.assertIn("med", line)
 
     def test_row_without_a_session_name_leaves_that_cell_empty(self) -> None:
-        gs = GlobalSnapshot(now=NOW, stages=[session("/a", "plain", [Worker("w", RUNNING, start=NOW)], tag="CDX")])
+        gs = GlobalSnapshot(now=NOW, stages=[session("/a", "plain", [Worker("w", RUNNING, start=NOW)], tag="Codex")])
         line = line_with(plain_lines(gs, UIState()), "plain")
-        self.assertIn("CDX", line)
+        self.assertIn("Codex", line)
         self.assertNotIn("CC·", line)
 
     def test_closed_session_shows_only_after_finished_fold_opens(self) -> None:
@@ -166,7 +166,7 @@ class Expanded(unittest.TestCase):
         self.a.snap.groups = [task([live1], "build", current=True), task([new1, new2, new3], "triage"),
                               task([old1, old2], "plan"), task([ancient], "investigate")]   # newest first
         self.b = session("/b", "beta", [Worker("bl", RUNNING, start=NOW - 40)] + [
-            Worker(f"b-{k}", DONE, start=NOW - 300, end=NOW - 100 - k) for k in range(6)], name="b-session", tag="CDX")
+            Worker(f"b-{k}", DONE, start=NOW - 300, end=NOW - 100 - k) for k in range(6)], name="b-session", tag="Codex")
         self.gs = GlobalSnapshot(now=NOW, stages=[self.a, self.b])
 
     def names(self, ui: UIState, path: str) -> list[str]:
@@ -467,7 +467,7 @@ class TextFilter(unittest.TestCase):
         self.addCleanup(env.stop)
         self.gs = GlobalSnapshot(now=NOW, stages=[
             session("/a", "alpha", [], name="monitor redesign", tag="CC·W", last=NOW - 60, lead_state="live"),
-            session("/b", "beta", [], name="other work", tag="CDX", last=NOW - 60, lead_state="live"),
+            session("/b", "beta", [], name="other work", tag="Codex", last=NOW - 60, lead_state="live"),
         ])
 
     def stages(self, query: str) -> list[str]:
@@ -477,7 +477,7 @@ class TextFilter(unittest.TestCase):
         self.assertEqual(self.stages("monitor"), ["/a"])
 
     def test_the_filter_matches_the_tag(self) -> None:
-        self.assertEqual(self.stages("cdx"), ["/b"])
+        self.assertEqual(self.stages("codex"), ["/b"])
 
 
 if __name__ == "__main__":

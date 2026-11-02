@@ -80,6 +80,11 @@ class OrderAndSections(unittest.TestCase):
         self.assertIn("$8.05 left", text)
         self.assertIn("grok-bot", text.split("NO LIVE DATA")[1])
 
+    def test_local_model_is_not_shown(self) -> None:
+        local = [QuotaAccount("local", [win("5h", "five_hour", 0.0, 10.0, 3 * H)]), QuotaAccount("local", [], stale=True)]
+        text = plain(usage_lines(accounts() + local, True, None, False, 0, 100, NOW)[0])
+        self.assertNotIn("local", text)
+
     def test_verdicts_and_extra_spend(self) -> None:
         text = plain(usage_lines(accounts(), True, None, False, 0, 100, NOW)[0])
         self.assertIn("11 under pace", text)       # claude: 48 used, pace 59

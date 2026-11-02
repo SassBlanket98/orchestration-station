@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Station: a live view of an orchestrator's workers. Python, standard library only. Generated from src/ by build.py.
-#   <name>.pid            worker PID, written by the launch subshell (its mtime is the launch time)
+#   <name>.pid            worker PID, written by the launch subshell (requires worker metadata below)
 #   <name>.log / .txt     worker output (steps, tool counts, tokens and cost are parsed from it)
-#   <name>.model          optional, one line: model and effort (else read from the process or log)
+#   <name>.model          one line: model and effort (else read from the process or log); .session, .run.json,
+#                         or briefs/<name>.md also identify a worker; logs alone do not
 #   briefs/<name>.md      brief; first "# " line is the title, "Goal: ..." line is the goal
 #   <name>/REPORT.md      finished worker's report; "## Summary" section is shown
 #   PROGRESS.md           lead's milestones, one per line, oldest first, each starting "HH:MM "

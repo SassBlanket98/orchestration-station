@@ -149,6 +149,22 @@ class StationClicks(unittest.TestCase):
         self.d.click("select", "live-1", now=NOW + 5, col_offset=30)
         self.assertEqual(self.ui.sel, 1)
 
+    def test_click_selects_second_same_named_worker_by_key(self) -> None:
+        first = worker("w1", RUNNING, NOW - 10)
+        first.home = "/stage/a"
+        second = worker("w1", RUNNING, NOW - 5)
+        second.home = "/stage/b"
+        snap = Snapshot(now=NOW, workers=[first, second])
+        ui = UIState()
+        driver = Driver(ui, snap)
+
+        driver.draw(NOW)
+        hits = [hit for hit in ui.hits if hit[4] == "select"]
+        self.assertEqual([hit[5] for hit in hits], [first.key, second.key])
+        driver.send(sgr(0, hits[1][2], hits[1][0]), NOW)
+
+        self.assertEqual(ui.sel, 1)
+
     def test_click_on_the_selected_row_is_enter(self) -> None:
         self.d.click("select", "live-0", now=NOW)           # already selected: Enter opens its card
         self.assertEqual(self.ui.expanded, {"live-0"})
