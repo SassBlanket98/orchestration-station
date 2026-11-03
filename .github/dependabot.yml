@@ -2,16 +2,16 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
     groups:
       actions: { patterns: ["*"] }
   - package-ecosystem: uv
     directory: /dashboard/backend
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
     groups:
       backend: { patterns: ["*"] }
   - package-ecosystem: npm
     directory: /dashboard/frontend
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
     groups:
       frontend: { patterns: ["*"] }
