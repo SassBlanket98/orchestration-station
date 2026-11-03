@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Station: a live view of an orchestrator's workers. Python, standard library only. Generated from src/ by build.py.
-#   <name>.pid            worker PID, written by the launch subshell (its mtime is the launch time)
+#   <name>.pid            worker PID, written by the launch subshell (requires worker metadata below)
 #   <name>.log / .txt     worker output (steps, tool counts, tokens and cost are parsed from it)
-#   <name>.model          optional, one line: model and effort (else read from the process or log)
+#   <name>.model          one line: model and effort (else read from the process or log); .session, .run.json,
+#                         or briefs/<name>.md also identify a worker; logs alone do not
 #   briefs/<name>.md      brief; first "# " line is the title, "Goal: ..." line is the goal
 #   <name>/REPORT.md      finished worker's report; "## Summary" section is shown
 #   PROGRESS.md           lead's milestones, one per line, oldest first, each starting "HH:MM "
@@ -245,6 +246,7 @@ class Worker:
     effort: str = ""                     # reasoning effort ("low", "medium", "high", ...); "" if unknown
     session: str = ""                    # id of the lead session that launched it (from <name>.session); "" if unlinked
     home: str = ""                       # the stage dir it lives in when its session row sits in another stage; "" = the row's own
+    parent_key: str = ""                  # identity of parent worker; parent remains its display name
     execution_id: str = ""
     account: str = ""
     native_id: str = ""
@@ -272,6 +274,16 @@ class Worker:
     resume_cmd: str = ""                 # e.g. "codex resume <id>"; "" = cannot resume
     calls: list[CCCall] = field(default_factory=list)        # tool calls, newest LAST, at most 200
 
+    @property
+    def key(self) -> str:
+        """Stable identity for a worker, separate from its visible name and file basename."""
+        if self.execution_id and (not self.home or self.native_id):
+            return self.execution_id
+        if not self.home:
+            return self.name
+        stage = os.path.normpath(os.path.abspath(self.home))
+        return json.dumps([stage, self.name], ensure_ascii=False, separators=(",", ":"))
+
 
 @dataclass
 class Group:
@@ -285,10 +297,12 @@ class Group:
     finished: bool = False               # every worker is done
     finished_at: float | None = None     # newest end, once finished
     current: bool = False                # active: has a live worker (any number of groups), or the newest group when none is live
+    worker_keys: list[str] = field(default_factory=list)  # aligned identity keys; empty for legacy groups
+    stage: str = ""                      # origin stage basename when known
 
     @property
     def key(self) -> str:
-        return "|".join(self.workers)
+        return "|".join(self.worker_keys or self.workers)
 
 
 @dataclass
@@ -697,24 +711,29 @@ class UIState:
 def nest_workers(workers: list[Worker]) -> list[Worker]:
     """``workers`` with each nested worker moved right after the worker that launched it (children in the order given,
     at any depth). A worker whose ``parent`` is not in the list, or that would close a loop, stays where it was."""
-    names = {wk.name for wk in workers}
+    names: dict[str, list[Worker]] = {}
+    for wk in workers:
+        names.setdefault(wk.name, []).append(wk)
+    keys = {wk.key for wk in workers}
     kids: dict[str, list[Worker]] = {}
     for wk in workers:
-        if wk.parent and wk.parent in names and wk.parent != wk.name:
-            kids.setdefault(wk.parent, []).append(wk)
+        parent_key = wk.parent_key or (names[wk.parent][0].key if wk.parent in names and len(names[wk.parent]) == 1 else "")
+        if parent_key and parent_key in keys and parent_key != wk.key:
+            wk.parent_key = parent_key
+            kids.setdefault(parent_key, []).append(wk)
     out: list[Worker] = []
     seen: set[str] = set()
 
     def add(wk: Worker) -> None:
-        if wk.name in seen:
+        if wk.key in seen:
             return
-        seen.add(wk.name)
+        seen.add(wk.key)
         out.append(wk)
-        for child in kids.get(wk.name, ()):
+        for child in kids.get(wk.key, ()):
             add(child)
 
     for wk in workers:
-        if not (wk.parent and wk.parent in names and wk.parent != wk.name):
+        if not any(child.key == wk.key for group in kids.values() for child in group):
             add(wk)
     for wk in workers:   # a parent loop has no root: keep its members listed
         add(wk)
@@ -1166,6 +1185,30 @@ with only the prefix removed. Versions are never invented: ``gpt-6-sol`` is ``GP
 """
 
 
+# One source for the short harness labels shown on session and worker rows.
+HARNESS_LABELS = {
+    ("claude", "personal"): "CC·P",
+    ("claude", "work"): "CC·W",
+    ("codex", "personal"): "Codex",
+    ("t3", "personal"): "T3",
+    ("opencode", "personal"): "OCode",
+    ("openclaw", "openclaw"): "OClaw",
+    ("cursor", "personal"): "Cursr",
+}
+
+
+def harness_label(harness: str, account: str = "personal") -> str:
+    """Return the configured short harness label, or an empty string when unknown."""
+    harness, account = harness.lower(), account.lower()
+    if harness == "claude" and account not in ("personal", "work"):
+        return "CC"
+    return HARNESS_LABELS.get((harness, account), "")
+
+
+def harness_for_label(label: str) -> str:
+    """Reverse the shared label table for legacy rows whose harness field is absent."""
+    return next((harness for (harness, _), value in HARNESS_LABELS.items() if value == label), "")
+
 _PREFIXES = ("opencode-go/", "opencode/", "anthropic/", "cursor-")
 
 # Claude lead models arrive as the short form ``sonnet-5.5``; the version is read from the id, never guessed.
@@ -1344,7 +1387,7 @@ Supported stores (all read-only):
 - OpenCode: ~/.local/share/opencode/opencode.db (session_v2 + session_message).
 - OpenClaw (openclaw agent only): ~/.openclaw/agents/openclaw/agent/openclaw-agent.sqlite session_nodes.entry_json.
 - Cursor: ~/.cursor/projects/*/agent-transcripts/*/*.jsonl, with cwd/times from only the
-  schemaVersion, createdAtMs, updatedAtMs and cwd fields of ~/.cursor/chats/*/*/meta.json.
+  schemaVersion, createdAtMs, updatedAtMs, cwd and optional model fields of ~/.cursor/chats/*/*/meta.json.
   store.db is opaque and never read. Task children match an exact <user_query> prompt after
   CRLF normalization and outer whitespace trimming; ambiguous matches remain unlinked.
 """
@@ -1363,7 +1406,14 @@ _NV_STORED_CAP = 1024 * 1024          # max UTF-8 bytes kept for a stored brief 
 _NV_TRUNC_MARK = "\n[truncated]"
 _NV_CURSOR_HEAD = 64 * 1024
 _NV_CURSOR_TAIL = 64 * 1024
+_NV_NAME_LIMIT = 60
 _nv_cursor_cache: dict[str, dict] = {}
+_NV_NAME_INPUT_LIMIT = 2000
+_NV_CODEX_NAME_CACHE_MAX = 4096
+_nv_codex_name_cache: dict[str, tuple[int, int, str]] = {}
+_nv_codex_index_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
+_NV_CODEX_INDEX_MAX = 8 * 1024 * 1024
+_NV_CODEX_INDEX_LINE_MAX = 64 * 1024
 # Metrics parsed by the native scan, readable by the collector without touching the record: (harness, native id) -> dict.
 _nv_metrics: dict[tuple[str, str], dict] = {}
 _nv_metric_paths: dict[tuple[str, str], str] = {}
@@ -1420,6 +1470,149 @@ def _nv_goal(brief: str) -> tuple[str, str]:
     if match:
         return match.group(1).strip(), "native task"
     return " ".join(brief.split())[:240], "native excerpt"
+
+
+_NV_ID_NAME = re.compile(r"(?:[0-9a-f]{8}-[0-9a-f-]{27}|ses_[a-z0-9_-]+|[0-9a-f]{24,}|[a-z]+-[0-9a-f]{8,})", re.IGNORECASE)
+_NV_NAME_PLACEHOLDERS = {"shell command request title generation", "new session", "untitled", "session",
+                         "cursor task", "cursor task (unlinked)", "cursor task (ambiguous, unlinked)"}
+_NV_STAGE_NAME = re.compile(r"\.stage/([^/\s]+)/([^/\s]+)/REPORT\.md|\.stage/([^/\s]+)/briefs/([^/\s]+)\.md", re.IGNORECASE)
+_NV_BOILERPLATE_PREFIXES = ("do the task in your", "do the review in your", "read brief.md",
+                            "follow it exactly")
+
+
+def _nv_stage_prompt_name(text: str) -> str:
+    match = _NV_STAGE_NAME.search(text)
+    if not match:
+        return ""
+    directory, name = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+    return _nv_mask_name(f"{name} ({directory})")
+
+
+def _nv_boilerplate(text: str) -> bool:
+    normalized = " ".join(text.split()).strip(" \t\r\n\"'`*#")
+    lowered = normalized.casefold()
+    if lowered.startswith(_NV_BOILERPLATE_PREFIXES):
+        return True
+    words = normalized.split()
+    return (len(words) < 12 and bool(re.search(r"\b(?:read|follow)\b", lowered))
+            and bool(re.search(r"\b(?:[\w.-]+\.(?:md|txt|markdown)|file|prompt|task)\b", lowered)))
+
+
+def _nv_prompt_name(text: str) -> str:
+    """A short display name from the first real prompt line, excluding harness wrappers and ids."""
+    text = text[:_NV_NAME_INPUT_LIMIT]
+    text = re.sub(r"<user_query>\s*(.*?)\s*</user_query>", r"\1", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<(?:system-reminder|environment_context|command-[^>]+)>.*?</(?:system-reminder|environment_context|command-[^>]+)>",
+                  " ", text, flags=re.IGNORECASE | re.DOTALL)
+    if _nv_boilerplate(text):
+        return _nv_stage_prompt_name(text)
+    for raw in text.splitlines():
+        line = re.sub(r"<[^>]+>", " ", raw).strip()
+        if not line or line in ("---", "***"):
+            continue
+        if re.match(r"^(?:AGENTS\.md\b|<environment_context>|<system-reminder>|"
+                    r"(?:Job|Model|Effort|Builder|Mode):|Current date:)", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^\s*(?:#{1,6}\s*|[-*+]\s+|>\s*)+", "", line)
+        if re.match(r"^AGENTS\.md\b", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^(?:Goal|Task|Request):\s*", "", line, flags=re.IGNORECASE)
+        line = re.sub(r"^[#*`'\"“”‘’]+|[#*`'\"“”‘’]+$", "", line).strip()
+        line = " ".join(line.split())
+        codex_fallback = re.match(r"^codex\s+[0-9a-f]{8}$", line, re.IGNORECASE)
+        if not line or _NV_ID_NAME.fullmatch(line) or codex_fallback or re.match(r"^<[^>]+>$", line):
+            continue
+        line = _nv_mask_name(line)
+        if len(line) > _NV_NAME_LIMIT:
+            line = line[:_NV_NAME_LIMIT - 1].rstrip() + "…"
+        return line
+    return ""
+
+
+def _nv_explicit_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split()).strip()
+    if (not text or text.casefold() in _NV_NAME_PLACEHOLDERS or _NV_ID_NAME.fullmatch(text)
+            or re.match(r"^codex\s+[0-9a-f]{8}$", text, re.IGNORECASE)):
+        return ""
+    if _nv_boilerplate(text):
+        return _nv_stage_prompt_name(text)
+    return _nv_prompt_name(text) or _nv_mask_name(text)[:_NV_NAME_LIMIT]
+
+
+_NV_SECRET_NAME = re.compile(
+    r"(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9]{12,}|AKIA[0-9A-Z]{16}|"
+    r"Bearer\s+\S+|[0-9a-f]{24,}|[A-Za-z0-9+/]{24,}={0,2})",
+    re.IGNORECASE,
+)
+
+
+def _nv_mask_name(text: str) -> str:
+    return _NV_SECRET_NAME.sub("…", text)
+
+
+_nv_fallback_names: set[str] = set()   # names this process generated; an earlier scan's fallback is not a real title
+
+
+def _nv_session_name(record: ExecutionRecord, prompt: str, explicit: object = "") -> str:
+    title = "" if record.title in _nv_fallback_names else record.title
+    named = (_nv_explicit_name(explicit) or _nv_explicit_name(title) or _nv_prompt_name(prompt))
+    if named:
+        return _nv_mask_name(named)
+    fallback = _nv_fallback_name(record)
+    _nv_fallback_names.add(fallback)
+    return fallback
+
+
+def _nv_fallback_name(record: ExecutionRecord) -> str:
+    model = display_model(record.model) or record.harness.capitalize() or "Worker"
+    cwd = os.path.basename(record.cwd.rstrip("/")) or "session"
+    started = record.started
+    if not started and record.source:
+        try:
+            started = Path(record.source).stat().st_mtime
+        except OSError:
+            pass
+    start = datetime.fromtimestamp(started).strftime("%H:%M") if started else "--:--"
+    if not started:
+        identity = record.native_id or record.execution_id
+        fallback = f"{model} · {cwd} · {identity[:6]}" if identity else f"{model} · {cwd} · {start}"
+        return _nv_mask_name(fallback)
+    return _nv_mask_name(f"{model} · {cwd} · {start}")
+
+
+def _nv_codex_thread_names(home: str) -> dict[str, str]:
+    """Read Codex's session index title map, tolerating older/incomplete index rows."""
+    result: dict[str, str] = {}
+    path = Path(home) / ".codex/session_index.jsonl"
+    try:
+        stat = path.stat()
+        cached = _nv_codex_index_cache.get(str(path))
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            return cached[2]
+        with path.open("rb") as stream:
+            raw_index = stream.read(_NV_CODEX_INDEX_MAX + 1)
+        for raw_line in raw_index[:_NV_CODEX_INDEX_MAX].splitlines():
+            if len(raw_line) > _NV_CODEX_INDEX_LINE_MAX:
+                continue
+            try:
+                row = json.loads(raw_line.decode("utf-8", "replace"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("id", row.get("thread_id", ""))
+            title = _nv_explicit_name(row.get("thread_name"))
+            if isinstance(sid, str) and sid and title:
+                result[sid] = title
+    except OSError:
+        pass
+    else:
+        _nv_codex_index_cache[str(path)] = (stat.st_mtime_ns, stat.st_size, result)
+        while len(_nv_codex_index_cache) > _NV_CODEX_NAME_CACHE_MAX:
+            _nv_codex_index_cache.pop(next(iter(_nv_codex_index_cache)))
+    return result
 
 
 def _nv_sig(path: Path, start: int, length: int) -> str:
@@ -1596,6 +1789,13 @@ def _nv_apply(st: dict, obj: dict, family: str, account: str, path: Path) -> Non
         if st["record"] is None:
             return
     record = st["record"]
+    if family == "claude" and typ in ("ai-title", "custom-title"):
+        field = "customTitle" if typ == "custom-title" else "aiTitle"
+        title = _nv_explicit_name(obj.get(field))
+        priority = 2 if typ == "custom-title" else 1
+        if title and priority >= st.get("title_priority", 0):
+            record.title = title
+            st["title_priority"] = priority
     record.activity = max(record.activity, stamp)
     if (family == "claude" and record.role == "lead" and
             (obj.get("entrypoint") in ("sdk-cli", "sdk-ts") or obj.get("promptSource") == "sdk")):
@@ -1640,7 +1840,8 @@ def _nv_apply(st: dict, obj: dict, family: str, account: str, path: Path) -> Non
     if isinstance(message, dict):
         role = message.get("role", typ)
         text = _nv_text(message.get("content", ""))
-        if role == "user" and text and not st["brief"] and obj.get("isMeta") is not True:
+        if (role == "user" and text and not st["brief"] and obj.get("isMeta") is not True
+                and not (family == "claude" and typ == "system")):
             st["brief"] = _nv_cap(text)
         if role == "user" and family == "claude":
             st["result"] = ""
@@ -1732,6 +1933,7 @@ def _nv_jsonl(path: Path, family: str, account: str, now: float) -> ExecutionEvi
         if family == "claude":
             _nv_claude_finish(st, stat.st_mtime, now)
         record.goal, record.purpose_source = _nv_goal(st["brief"])
+        record.title = _nv_session_name(record, st["brief"])
         if st["oversized"]:
             record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
         _nv_metrics_put(record.harness, record.native_id, _nv_record_metrics(record, st), path)
@@ -1798,6 +2000,9 @@ def _nv_opencode(home: str) -> list[ExecutionEvidence]:
                     pass
                 brief, over_user = _nv_db_text(conn, sid, "user")
                 result, over_asst = _nv_db_text(conn, sid, "assistant")
+                if (isinstance(title, str) and title.strip().casefold() in _NV_NAME_PLACEHOLDERS
+                        and not brief.strip()):
+                    continue
                 if idle and _nv_time(idle) >= record.activity:
                     record.state = "finished" if parent else "idle"
                     if parent:
@@ -1805,6 +2010,7 @@ def _nv_opencode(home: str) -> list[ExecutionEvidence]:
                         record.outcome = {"succeeded": "success", "failed": "failed", "error": "failed",
                                           "interrupted": "cancelled"}.get(outcome or "", "unknown")
                 record.goal, record.purpose_source = _nv_goal(brief)
+                record.title = _nv_session_name(record, brief)
                 if over_user or over_asst:
                     record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
                 record.output_available = bool(result)
@@ -1877,6 +2083,55 @@ def _nv_cursor_prompt(text: str) -> str:
     return text.replace("\r\n", "\n").strip()
 
 
+_NV_CURSOR_VERBOSE_MODEL = re.compile(r"^\s*claude\s+(haiku|sonnet|opus)\s+(\d+)\.(\d+)\b", re.IGNORECASE)
+
+
+def _nv_cursor_model_value(raw: object) -> str:
+    """Normalize Cursor's verbose Claude selection, preserving all unknown model strings verbatim."""
+    if not isinstance(raw, str):
+        return ""
+    match = _NV_CURSOR_VERBOSE_MODEL.match(raw)
+    if match:
+        return f"claude-{match[1].lower()}-{match[2]}-{match[3]}"
+    return raw
+
+
+def _nv_cursor_event_model(obj: dict) -> str:
+    """Read Cursor's per-message model, then explicit event/message model fields."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            options = block.get("providerOptions")
+            cursor = options.get("cursor") if isinstance(options, dict) else None
+            if isinstance(cursor, dict) and isinstance(cursor.get("modelName"), str):
+                return cursor["modelName"]
+    for container in (obj, obj.get("message")):
+        if isinstance(container, dict) and isinstance(container.get("model"), str):
+            return container["model"]
+    return ""
+
+
+def _nv_cursor_tool_model(obj: dict) -> str:
+    """Read a tool-input model only as a fallback when the chat reports none."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            data = block.get("input")
+            if not isinstance(data, dict):
+                continue
+            for candidate in (data.get("model"),
+                              data.get("arguments", {}).get("model") if isinstance(data.get("arguments"), dict) else None):
+                if isinstance(candidate, str):
+                    return candidate
+    return ""
+
+
 def _nv_cursor_blocks(obj: dict) -> list[dict]:
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -1899,7 +2154,7 @@ def _nv_cursor_file(path: Path) -> dict | None:
                 st = None
         if st is None:
             st = {"ino": stat.st_ino, "offset": 0, "brief": "", "prompts": set(), "oversized": False,
-                  "started": 0.0}
+                  "started": 0.0, "model": "", "model_fallback": ""}
         with path.open("rb") as stream:
             stream.seek(st["offset"])
             for begin, raw, complete in _nv_lines(stream, MAX_ARTIFACT_BYTES):
@@ -1915,6 +2170,10 @@ def _nv_cursor_file(path: Path) -> dict | None:
                     continue
                 if not isinstance(obj, dict):
                     continue
+                if not st["model"]:
+                    st["model"] = _nv_cursor_model_value(_nv_cursor_event_model(obj))
+                if not st["model_fallback"]:
+                    st["model_fallback"] = _nv_cursor_model_value(_nv_cursor_tool_model(obj))
                 if not st["started"]:
                     st["started"] = _nv_time(obj.get("timestamp"))
                 blocks = _nv_cursor_blocks(obj)
@@ -1995,7 +2254,7 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
             if chat_id in metadata:
                 metadata[chat_id] = {}  # duplicate identity is not trustworthy
                 continue
-            meta = {name: data.get(name) for name in ("schemaVersion", "createdAtMs", "updatedAtMs", "cwd")}
+            meta = {name: data.get(name) for name in ("schemaVersion", "createdAtMs", "updatedAtMs", "cwd", "model")}
             metadata[chat_id] = meta
             cwd = meta["cwd"]
             if isinstance(cwd, str) and os.path.isabs(cwd):
@@ -2037,7 +2296,10 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
         record = ExecutionRecord(execution_key("cursor", "personal", sid), harness="cursor", account="personal",
                                  native_id=sid, role="lead" if has_meta else "worker", cwd=cwd,
                                  title="" if has_meta else "Cursor task (unlinked)",
-                                 started=started, activity=activity, source=str(path))
+                                 started=started, activity=activity,
+                                 model=_nv_cursor_model_value(parsed["model"] or parsed["model_fallback"] or
+                                                              (meta.get("model") if has_meta else "")),
+                                 source=str(path))
         status = parsed["status"]
         if status:
             record.outcome = {"success": "success", "error": "failed", "failed": "failed",
@@ -2050,6 +2312,7 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
             if not has_meta:
                 record.ended = activity
         record.goal, record.purpose_source = _nv_goal(parsed["brief"])
+        record.title = _nv_session_name(record, parsed["brief"])
         if parsed["oversized"]:
             record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
         record.output_available = bool(parsed["result"])
@@ -2070,6 +2333,16 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
                                    if parent.record.execution_id == record.parent_id), "")
         elif len(matches) > 1:
             record.title = "Cursor task (ambiguous, unlinked)"
+    for item in items:
+        record = item.record
+        if record.role == "worker" and not record.parent_id:
+            suffix = " (ambiguous, unlinked)" if "ambiguous" in record.title.casefold() else " (unlinked)"
+            record.title = ""
+            title = _nv_session_name(record, item.brief)
+            title_limit = _NV_NAME_LIMIT - len(suffix)
+            if len(title) > title_limit:
+                title = title[:title_limit - 1].rstrip() + "…"
+            record.title = title + suffix
     return items
 
 
@@ -2483,6 +2756,10 @@ def _nv_evict() -> None:
         del _nv_cache[key]
     for key in [key for key in _nv_cursor_cache if not os.path.lexists(key)]:
         del _nv_cursor_cache[key]
+    for key in [key for key in _nv_codex_name_cache if not os.path.lexists(key)]:
+        del _nv_codex_name_cache[key]
+    for key in [key for key in _nv_codex_index_cache if not os.path.lexists(key)]:
+        del _nv_codex_index_cache[key]
     for key in [key for key in _nv_metric_paths if not os.path.lexists(_nv_metric_paths[key])]:
         _nv_metrics.pop(key, None)
         del _nv_metric_paths[key]
@@ -2493,6 +2770,24 @@ def _nv_evict() -> None:
     for key in [key for key in _metric_opencode_db if not os.path.lexists(key)]:
         del _metric_opencode_db[key]
         _metric_opencode_tools.pop(key, None)
+
+
+def _nv_codex_reader():
+    """Resolve Codex's sibling reader in source-tree and joined single-file builds."""
+    try:
+        from codexread import read_codex_session
+    except ImportError:
+        return globals()["read_codex_session"]
+    return read_codex_session
+
+
+def _nv_codex_prompt_reader():
+    """Resolve Codex's bounded first-prompt reader in source-tree and joined builds."""
+    try:
+        from codexread import read_codex_prompt_prefix
+    except ImportError:
+        return globals()["read_codex_prompt_prefix"]
+    return read_codex_prompt_prefix
 
 
 def read_native_executions(harness: str, home: str, now: float) -> list[ExecutionEvidence]:
@@ -2514,6 +2809,52 @@ def read_native_executions(harness: str, home: str, now: float) -> list[Executio
         items = _nv_cursor(home, now)
     else:
         return []
+    if harness in ("codex", "t3"):
+        thread_names = _nv_codex_thread_names(home)
+        read_codex_prompt = _nv_codex_prompt_reader()
+        for item in items:
+            record = item.record
+            if record.harness == harness:
+                indexed = _nv_explicit_name(thread_names.get(record.native_id, ""))
+                derived = ""
+                try:
+                    stat = Path(record.source).stat()
+                    signature = (stat.st_mtime_ns, stat.st_size)
+                    cached = _nv_codex_name_cache.get(record.source)
+                    if cached and cached[:2] == signature:
+                        derived = cached[2]
+                    else:
+                        prompt = "\n".join(read_codex_prompt(record.source))
+                        if not prompt:
+                            prompt = re.sub(
+                                r"<(?:INSTRUCTIONS|user_instructions|skills_instructions|permissions instructions)"
+                                r"\b[^>]*>.*?</(?:INSTRUCTIONS|user_instructions|skills_instructions|permissions instructions)\s*>",
+                                " ", item.brief, flags=re.IGNORECASE | re.DOTALL)
+                        derived = _nv_prompt_name(prompt)
+                        _nv_codex_name_cache[record.source] = (*signature, derived)
+                        while len(_nv_codex_name_cache) > _NV_CODEX_NAME_CACHE_MAX:
+                            _nv_codex_name_cache.pop(next(iter(_nv_codex_name_cache)))
+                except OSError:
+                    pass
+                if indexed or derived:
+                    record.title = indexed or derived
+                else:
+                    record.title = ""
+                    record.title = _nv_session_name(record, "")
+    else:
+        for item in items:
+            record = item.record
+            marker = ""
+            if harness == "cursor" and record.role == "worker" and not record.parent_id:
+                marker = " (ambiguous, unlinked)" if "ambiguous" in record.title.casefold() else " (unlinked)"
+            if marker:
+                record.title = ""
+            title = _nv_session_name(record, item.brief)
+            if marker:
+                title_limit = _NV_NAME_LIMIT - len(marker)
+                if len(title) > title_limit:
+                    title = title[:title_limit - 1].rstrip() + "…"
+            record.title = title + marker
     items = [item for item in items if item.record.harness == harness]
     _nv_link_roots(items)
     return items
@@ -4169,7 +4510,10 @@ prompt and the resume command. Imports model (and native helpers) only; collect 
 
 
 # first user messages codex injects before the real prompt; skipped when looking for it (matched on the stripped start)
-INJECTED_PREFIXES = ("# AGENTS.md instructions", "<environment_context>", "<user_instructions>", "<permissions instructions>")
+INJECTED_PREFIXES = (
+    "# AGENTS.md instructions", "<INSTRUCTIONS>", "<environment_context>", "<permissions instructions>",
+    "<skills_instructions>", "<user_instructions>",
+)
 
 
 @dataclass
@@ -4195,6 +4539,7 @@ class CodexSession:
 
 _CX_KEEP = 64                     # cached files per reader; the oldest is dropped past this
 _CX_LINE_MAX = 16 * 1024 * 1024   # a rollout line longer than this is skipped, never parsed as a partial object
+_CX_NAME_PREFIX_MAX = 2 * 1024 * 1024
 _CX_CALL_MAX = 200                # newest tool calls kept
 _CX_PENDING_MAX = 500             # calls still waiting for their output
 _CX_LINES_MAX = 400               # prompt and system-prompt lines kept
@@ -4239,6 +4584,31 @@ def read_codex_session(path: str, now: float | None = None) -> CodexSession | No
         return replace(sess, prompt=list(sess.prompt), system_prompt=list(sess.system_prompt),
                        calls=[replace(call) for call in sess.calls])
     return None
+
+
+def read_codex_prompt_prefix(path: str, max_bytes: int = _CX_NAME_PREFIX_MAX) -> list[str]:
+    """Read only the rollout prefix needed to find its first real user prompt."""
+    state = _crd_state(str(path))
+    limit = max(0, min(max_bytes, _CX_NAME_PREFIX_MAX))
+    consumed = 0
+    try:
+        with Path(path).open("rb") as stream:
+            while consumed < limit and not state["prompt_seen"]:
+                raw = stream.readline(min(limit - consumed, _CX_LINE_MAX + 1))
+                if not raw:
+                    break
+                consumed += len(raw)
+                if not raw.endswith(b"\n") or len(raw) > _CX_LINE_MAX:
+                    break
+                try:
+                    obj = json.loads(raw)
+                except (ValueError, UnicodeError, RecursionError):
+                    continue
+                if isinstance(obj, dict):
+                    _crd_item(state, obj)
+    except OSError:
+        return []
+    return list(state["sess"].prompt) if state["valid"] else []
 
 
 def _crd_state(path: str) -> dict:
@@ -4398,7 +4768,8 @@ def _crd_prompt(state: dict, payload: dict) -> None:
         return
     text = _nv_text(_crd_content(payload.get("content")))
     stripped = text.strip()
-    if not stripped or stripped.startswith(INJECTED_PREFIXES):
+    if not stripped or stripped.startswith("# AGENTS.md instructions") or any(
+            marker in stripped for marker in INJECTED_PREFIXES[1:]):
         return
     sess.prompt = _crd_lines(text)
     sess.name = _crd_name(sess.prompt, sess.session_id)
@@ -4551,7 +4922,7 @@ _CX_ANSI_RE = re.compile(
 
 def row_key(stage: Stage, worker: Worker | None = None) -> str:
     """The key an event carries: "<stage path>|<worker name>"; the lead row's worker part is empty."""
-    return f"{stage.path}|{worker.name if worker is not None else ''}"
+    return f"{stage.path}|{worker.key if worker is not None else ''}"
 
 
 def row_events(stage: Stage, worker: Worker | None = None, limit: int = ROW_LIMIT) -> list[CCEvent]:
@@ -4748,15 +5119,7 @@ def _co_agent_label() -> str:
     return "Bot" if OPENCLAW_AGENT.casefold() == "openclaw" else OPENCLAW_AGENT[:1].upper() + OPENCLAW_AGENT[1:]
 
 
-_co_execution_tags = {
-    ("claude", "personal"): "CC·P",
-    ("claude", "work"): "CC·W",
-    ("codex", "personal"): "CDX",
-    ("t3", "personal"): "T3",
-    ("opencode", "personal"): "OCode",
-    ("openclaw", "openclaw"): _co_agent_label(),
-    ("cursor", "personal"): "CUR",
-}
+_co_execution_tags = HARNESS_LABELS
 _co_child_live_s = 900             # an OpenCode subagent session updated this recently and not idle is running, seconds
 _co_child_max = 40                 # most subagent sessions listed under one OpenCode session
 _co_terminal_peer_s = 300          # in a folder with a terminal OpenCode, other sessions show only when this fresh, seconds
@@ -4780,8 +5143,10 @@ _co_cc_injected_goal = "# AGENTS.md instructions"
 _co_cc_injected_names = ("# AGENTS.md instructions", "<environment_context>", "<user_instructions>",
                          "<permissions instructions>")
 _co_cc_uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-_co_cc_tag_harness = {"CC·W": "claude", "CC·P": "claude", "CDX": "codex",
-                      "OCode": "opencode", "OClaw": "openclaw", _co_agent_label(): "openclaw", "CUR": "cursor"}
+_co_cc_tag_harness = {label: harness_for_label(label) for (harness, _), label in HARNESS_LABELS.items()
+                      if harness != "t3"}
+_co_cc_tag_harness.update({"CDX": "codex", "CUR": "cursor"})
+_co_cc_tag_harness[_co_agent_label()] = "openclaw"
 _co_cc_codex_cache: dict[str, tuple[float, CodexSession | None]] = {}
 
 
@@ -4942,7 +5307,8 @@ def _co_is_launcher_name(name: str, cwd: str) -> bool:
     return bool(name) and bool(base) and re.fullmatch(rf"{re.escape(base)}(-[a-z0-9]{{1,4}})?", name.lower()) is not None
 
 
-def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "") -> dict[str, object]:
+def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "",
+                     procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> dict[str, object]:
     """Best effort, read-only metadata for the selected interactive lead."""
     result: dict[str, object] = {"session_id": "", "session_name": "", "tag": "", "lead_model": "", "effort": "", "activity": 0.0}
     result.update(parent="", root_session="", launch_depth=0, app=False, app_id="", tmux="")
@@ -4967,9 +5333,17 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
         result["launch_depth"] = max(0, int(env.get("STATUS_DEPTH", "0")))
     except ValueError:
         pass
+    if not any(env.get(key) for key in ("STATUS_PARENT_SESSION", "STATUS_ROOT_SESSION", "STATUS_DEPTH")):
+        own_session = child_session or _co_env_session(env)
+        if own_session:
+            parent, root, depth = _co_ancestor_lineage(pid, own_session, procs)
+        else:
+            parent, root, depth = "", "", 0
+        result["parent"], result["root_session"], result["launch_depth"] = parent, root, depth
     if kind.startswith("claude"):
         config = env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-        result["tag"] = "CC·W" if "work" in os.path.basename(config).lower() else "CC·P"
+        account = "work" if "work" in os.path.basename(config).lower() else "personal"
+        result["tag"] = harness_label("claude", account)
         try:
             info = _co_claude_sidecar(config, pid, child_session)
             bridge = info.get("bridgeSessionId", "")
@@ -5042,7 +5416,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
             result["session_id"] = child_session
     elif kind in ("codex", "t3 code"):
         # T3 Code drives Codex underneath: its rollout is the same file, so it reads the same activity
-        result["tag"] = "T3" if kind == "t3 code" else "CDX"
+        result["tag"] = _co_execution_tags.get(("t3" if kind == "t3 code" else kind, "personal"), "")
         try:
             codex_home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
             index_path = os.path.join(codex_home, "session_index.jsonl")
@@ -5126,7 +5500,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
     elif kind == "t3 code":
         result["tag"] = "T3"   # T3 drives Codex underneath; it is its own harness, not a Codex session
     elif kind == "opencode":
-        result["tag"] = "OCode"
+        result["tag"] = harness_label(kind)
         try:
             db = os.path.join(os.path.expanduser("~"), ".local/share/opencode/opencode.db")
             conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
@@ -5160,7 +5534,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
         except (OSError, sqlite3.Error, ValueError, TypeError):
             pass
     elif kind == "cursor":
-        result["tag"] = "CUR"
+        result["tag"] = _co_execution_tags.get((kind, "personal"), "")
     harness_title = result.pop("harness_title", "")
     result["session_name"] = _co_short_name(str(explicit_name or harness_title))
     return result
@@ -5522,11 +5896,7 @@ def _co_is_service(
     """
     if pid is None or pid not in procs:
         return False
-    if _co_brief_path(stage, name) is not None:
-        return False
-    if _co_stat(os.path.join(stage, name + ".model")) is not None:
-        return False
-    if os.path.isdir(os.path.join(stage, name)):
+    if _co_is_worker(stage, name) or os.path.isdir(os.path.join(stage, name)):
         return False
     return not _co_proc_is_agent(pid, children)
 
@@ -5561,13 +5931,46 @@ def _co_cwd(pid: int) -> str:
 
 
 _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "OPENCODE_SESSION_ID",
-                    "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "STATUS_PARENT_SESSION", "STATUS_PARENT_HARNESS",
+                    "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_PID", "STATUS_PARENT_SESSION", "STATUS_PARENT_HARNESS",
                     "STATUS_ROOT_SESSION", "STATUS_DEPTH")
 
 
 def _co_environ(pid: int) -> dict[str, str]:
     """The variables in ``_co_environ_keys`` from the process provider. The rest is never kept: it holds secrets."""
     return _pr_environ(pid, _co_environ_keys)
+
+
+def _co_env_session(env: dict[str, str]) -> str:
+    for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"):
+        value = env.get(key, "")
+        if value:
+            return value
+    return ""
+
+
+def _co_ancestor_lineage(pid: int, own_session: str,
+                         procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> tuple[str, str, int]:
+    """Read lineage from the nearest different-session ancestor, bounded to 16 process links."""
+    if not own_session:
+        return "", "", 0
+    procs = _pr_scan() if procs is None else procs
+    seen = {pid}
+    current = procs.get(pid, (0, 0, 0, 0, 0))[0]
+    for _ in range(16):
+        if current <= 1 or current in seen or current not in procs:
+            break
+        seen.add(current)
+        env = _co_environ(current)
+        session = _co_env_session(env)
+        if session and session != own_session:
+            root = env.get("STATUS_ROOT_SESSION", "") or session
+            try:
+                depth = max(0, int(env.get("STATUS_DEPTH", "0"))) + 1
+            except (TypeError, ValueError):
+                depth = 1
+            return session, root, depth
+        current = procs[current][0]
+    return "", "", 0
 
 
 _co_ctx_cache: dict[str, tuple[float, int, int, int, int | None]] = {}   # transcript -> mtime, size, inode, ctime, window
@@ -6177,15 +6580,26 @@ def _co_service_leads(procs: dict[int, tuple[int, int, int, int, int]], argv_of:
     return leads
 
 
+def _co_is_worker(stage: str, name: str) -> bool:
+    """A PID belongs to a worker only when the stage also records worker metadata or a brief."""
+    for suffix in (".model", ".session", ".run.json"):
+        try:
+            if os.path.isfile(os.path.join(stage, name + suffix)):
+                return True
+        except OSError:
+            continue
+    return _co_brief_path(stage, name) is not None
+
+
 def _co_stage_pid_names(stage: str) -> dict[int, str]:
-    """pid -> worker name for every ``<name>.pid`` file in ``stage``."""
+    """pid -> worker name for valid worker records in ``stage``."""
     out: dict[int, str] = {}
     try:
         names = os.listdir(stage)
     except OSError:
         return out
     for filename in names:
-        if filename.endswith(".pid"):
+        if filename.endswith(".pid") and _co_is_worker(stage, filename[:-4]):
             pid = _co_digits(os.path.join(stage, filename))
             if pid:
                 out[pid] = filename[:-4]
@@ -6636,14 +7050,31 @@ def _co_group_of(members: list[Worker]) -> Group:
         done=done,
         total=len(members),
         live=sum(wk.state in LIVE_STATES for wk in members),
+        worker_keys=[wk.key for wk in members],
+        stage=os.path.basename(os.path.normpath(members[0].home)) if members[0].home else "",
         finished=finished,
         finished_at=max(ends) if finished and ends else None,
     )
 
 
 def _co_groups(workers: list[Worker], milestones: list[Milestone]) -> list[Group]:
-    """Workers grouped by the PROGRESS.md dispatch line that launched them (nearest start wins when a name was
-    launched twice); the rest, in 60 s windows of their starts. Newest group first; the current one is flagged."""
+    """Group workers within each origin stage, preserving dispatch and 60 s grouping inside each stage."""
+    origins: dict[str, list[Worker]] = {}
+    nonempty_origins = {worker.home for worker in workers if worker.home}
+    sole_origin = next(iter(nonempty_origins)) if len(nonempty_origins) == 1 else None
+    for worker in workers:
+        origin = worker.home or sole_origin or ""
+        origins.setdefault(origin, []).append(worker)
+    groups = [group for members in origins.values() for group in _co_groups_in_origin(members, milestones)]
+    active = [group for group in groups if group.live]
+    current = active or sorted(groups, key=lambda group: group.started, reverse=True)[:1]
+    for group in current:
+        group.current = True
+    return sorted(groups, key=lambda group: group.started, reverse=True)
+
+
+def _co_groups_in_origin(workers: list[Worker], milestones: list[Milestone]) -> list[Group]:
+    """Group one origin by the closest matching dispatch line, then 60 s windows."""
     dispatches: list[tuple[float, list[str]]] = []
     for stone in milestones:
         match = _co_dispatch_re.match(stone.text) if stone.ts is not None else None
@@ -6668,10 +7099,6 @@ def _co_groups(workers: list[Worker], milestones: list[Milestone]) -> list[Group
             windows.append([wk])
     clusters = list(buckets.values()) + windows
     groups = sorted((_co_group_of(members) for members in clusters), key=lambda g: g.started, reverse=True)
-    if groups:
-        active = [g for g in groups if g.live]
-        for group in active or groups[:1]:
-            group.current = True
     return groups
 
 
@@ -6916,7 +7343,7 @@ def _co_execution_worker(item: ExecutionEvidence, now: float, live: bool) -> Wor
     brief_text = item.brief.splitlines()
     result_text = item.result.splitlines()
     # The record's own counters ride on the worker's log, like every other harness's.
-    log = LogState()
+    log = LogState(harness=rec.harness)
     _co_metrics_fill(log, {"tokens_in": rec.tokens_in, "tokens_out": rec.tokens_out,
                            "tokens_cache": rec.tokens_cache, "cost": rec.cost,
                            "ctx_tokens": rec.context_tokens}, "record")
@@ -6927,7 +7354,7 @@ def _co_execution_worker(item: ExecutionEvidence, now: float, live: bool) -> Wor
         execution_id=rec.execution_id, account=rec.account, native_id=rec.native_id,
         parent_id=rec.parent_id, root_id=rec.root_id, linkage=rec.linkage, outcome=rec.outcome,
         brief_text=brief_text, result_text=result_text, purpose_source=rec.purpose_source,
-        output_available=rec.output_available or bool(item.result), log=log,
+        output_available=rec.output_available or bool(item.result), harness=rec.harness, log=log,
     )
 
 
@@ -8125,6 +8552,7 @@ class Collector:
             effort=effort,
             session=lineage[0], parent_session=lineage[1], root_session=lineage[2], depth=lineage[3],
             ancestors=lineage[4], launched=lineage[5],
+            home=os.path.abspath(stage),
         )
 
     def _co_discovered(
@@ -8237,6 +8665,8 @@ class Collector:
             pid = _co_digits(path)
             if _co_guard(_co_is_service, stage, name, pid, procs, children) is True:
                 services.append((name, True))
+                continue
+            if not _co_is_worker(stage, name):
                 continue
             worker = _co_guard(self._co_one_worker, stage, name, path, pid, now, procs, children)
             if isinstance(worker, Worker):
@@ -8713,8 +9143,12 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
         workers = stage.snap.workers
         if stage.execution_id or len(workers) < 2:
             continue
-        by_exec = {wk.execution_id: wk for wk in workers if wk.execution_id}
-        by_native = {wk.native_id: wk for wk in workers if wk.native_id}
+        exec_counts = {wk.execution_id: sum(item.execution_id == wk.execution_id for item in workers)
+                       for wk in workers if wk.execution_id}
+        native_counts = {wk.native_id: sum(item.native_id == wk.native_id for item in workers)
+                         for wk in workers if wk.native_id}
+        by_exec = {wk.execution_id: wk for wk in workers if wk.execution_id and exec_counts[wk.execution_id] == 1}
+        by_native = {wk.native_id: wk for wk in workers if wk.native_id and native_counts[wk.native_id] == 1}
         by_pid = {wk.pid: wk for wk in workers if wk.pid}
         parent_of: dict[str, str] = {}
         for wk in workers:
@@ -8736,46 +9170,65 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
                         break
                     pid = procs[pid][0]
             if found is not None and found is not wk:
-                parent_of[wk.name] = found.name
+                wk.parent = found.name
+                wk.parent_key = found.key
+                parent_of[wk.key] = found.key
         if not parent_of:
             continue
-        by_name = {wk.name: wk for wk in workers}
-        merged_children: set[str] = set()
-        for child_name, parent_name in list(parent_of.items()):
-            parent, child = by_name.get(parent_name), by_name.get(child_name)
+        by_key = {wk.key: wk for wk in workers}
+        merged_children: set[int] = set()
+        rekeyed: dict[str, str] = {}   # folding a native id into a worker can change its key
+        for child_key, parent_key in list(parent_of.items()):
+            parent, child = by_key.get(parent_key), by_key.get(child_key)
             if _co_is_own_native_row(parent, child) and not any(
-                    other_parent == parent_name and other in merged_children for other, other_parent in parent_of.items()):
+                    other_parent == parent_key and id(by_key.get(other)) in merged_children for other, other_parent in parent_of.items()):
                 # A dispatch worker's own native session, still running (its run record has no native id yet): one worker, not two.
+                old_key = parent.key
                 for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
                                    "brief_text", "result_text", "purpose_source", "output_available"):
                     _co_fill_identity(parent, child, field_name)
                 if child.model and parent.state in LIVE_STATES:
                     parent.model = child.model   # the session's own model name is more exact than the brief's alias
-                merged_children.add(child_name)
+                merged_children.add(id(child))
+                if parent.key != old_key:
+                    rekeyed[old_key] = parent.key
         if merged_children:
-            for name, parent_name in list(parent_of.items()):
-                if parent_name in merged_children:
-                    parent_of[name] = parent_of[parent_name]
-            for name in merged_children:
-                del parent_of[name]
-            workers = [wk for wk in workers if wk.name not in merged_children]
+            for key, parent_key in list(parent_of.items()):
+                if id(by_key.get(parent_key)) in merged_children:
+                    parent_of[key] = parent_of[parent_key]
+            for merged_id in merged_children:
+                child_key = next((key for key, item in by_key.items() if id(item) == merged_id), None)
+                if child_key is not None:
+                    parent_of.pop(child_key, None)
+            workers = [wk for wk in workers if id(wk) not in merged_children]
             stage.snap.workers = workers
+            if rekeyed:
+                parent_of = {rekeyed.get(key, key): rekeyed.get(parent_key, parent_key)
+                             for key, parent_key in parent_of.items()}
             if not parent_of:
                 continue
         for wk in workers:   # a loop of parents is cut at the worker that closes it
-            chain, cur = {wk.name}, parent_of.get(wk.name, "")
+            chain, cur = {wk.key}, parent_of.get(wk.key, "")
             while cur and cur not in chain:
                 chain.add(cur)
                 cur = parent_of.get(cur, "")
-            wk.parent = parent_of.get(wk.name, "") if not cur else ""
-        names = {wk.name: wk for wk in workers}
+            wk.parent_key = parent_of.get(wk.key, "") if not cur else ""
+            parent = next((item for item in workers if item.key == wk.parent_key), None)
+            wk.parent = parent.name if parent else ""
+        names = {wk.key: wk for wk in workers}
         for wk in workers:
-            level, cur = 0, wk.parent
+            level, cur = 0, wk.parent_key
             while cur and level < 32:
                 level += 1
-                cur = names[cur].parent if cur in names else ""
+                cur = names[cur].parent_key if cur in names else ""
             wk.level = level
         stage.snap.workers = nest_workers(workers)
+
+
+def _co_same_worker(a_key: str, a_home: str, a_pid: int | None,
+                    b_key: str, b_home: str, b_pid: int | None) -> bool:
+    """Home-less workers share an identity only when their pids also match."""
+    return a_key == b_key and (bool(a_home or b_home) or a_pid == b_pid)
 
 
 def _co_adopt_by_session(stages: list[Stage]) -> list[Stage]:
@@ -8796,10 +9249,14 @@ def _co_adopt_by_session(stages: list[Stage]) -> list[Stage]:
         kept: list[Worker] = []
         for wk in stage.snap.workers:
             lead = leads.get(wk.session) if wk.session else None
-            if lead is None or lead is stage or any(o.name == wk.name and o.pid == wk.pid for o in lead.snap.workers):
+            if lead is None or lead is stage or any(
+                    _co_same_worker(o.key, o.home, o.pid, wk.key, wk.home, wk.pid) or (
+                        o.pid not in (None, 0) and wk.pid not in (None, 0) and o.pid == wk.pid
+                        and (o.key == wk.key or not o.home or not wk.home)
+                    ) for o in lead.snap.workers):
                 kept.append(wk)
                 continue
-            wk.home = wk.home or stage.dir or stage.path
+            wk.home = wk.home or os.path.abspath(stage.dir or stage.path)
             lead.snap.workers.append(wk)
             adopted.setdefault(wk.session, []).append(wk)
         if len(kept) != len(stage.snap.workers):
@@ -8854,6 +9311,153 @@ def _co_run_record_workers(stages: list[Stage]) -> dict[str, tuple[Stage, str]]:
                 if native_id not in found:
                     found[native_id] = (station, str(data.get("name") or ""))
     return found
+
+
+def _co_codex_run_record_workers(stages: list[Stage]) -> list[tuple[Stage, Worker, dict]]:
+    """Codex dispatch records paired with the named worker in their station row."""
+    found: list[tuple[Stage, Worker, dict]] = []
+    for station in stages:
+        if not station.dir or not station.snap.workers:
+            continue
+        for directory in _co_run_record_dirs(station.dir):
+            def named_worker(name: str, station: Stage = station,
+                             directory: str = directory) -> Worker | None:
+                matches = [worker for worker in station.snap.workers if worker.name == name]
+                if len(matches) == 1:
+                    return matches[0]
+                origin_matches = [worker for worker in matches if worker.home
+                                  and os.path.realpath(worker.home) == os.path.realpath(directory)]
+                return origin_matches[0] if len(origin_matches) == 1 else None
+
+            for ident, data in _co_load_run_records(directory).items():
+                if data.get("harness") == "codex":
+                    worker = named_worker(str(data.get("name") or ""))
+                    if worker is not None:
+                        found.append((station, worker, {**data, "native_id": ident}))
+            for data in _co_unlinked_run_records(directory):
+                if data.get("harness") == "codex":
+                    worker = named_worker(str(data.get("name") or ""))
+                    if worker is not None:
+                        found.append((station, worker, data))
+    return found
+
+
+def _co_codex_pid_conflicts(native: Worker, target: Worker, workers: list[Worker],
+                            procs: dict[int, tuple[int, int, int, int, int]]) -> bool:
+    """Reject a row only when it is visibly running below a different live stage worker."""
+    if native.pid is None or target.pid is None or native.pid == target.pid:
+        return False
+    return any(other is not target and other.pid is not None and other.state in LIVE_STATES
+               and _co_ancestor_in(native.pid, {other.pid}, procs) for other in workers)
+
+
+def _co_codex_legacy_pairs(stages: list[Stage], procs: dict[int, tuple[int, int, int, int, int]]) -> list[tuple[Stage, Worker, Stage, Worker]]:
+    """Return only mutually unique historical Codex run/native pairs by cwd and close start time."""
+    records = _co_codex_run_record_workers(stages)
+    def execution_cwd(execution: Stage) -> str:
+        # Unattached execution buckets with multiple members have no single record cwd. Their path
+        # retains the bucket cwd: execution:unattached:<cwd>.
+        cwd = execution.cwd
+        if not cwd and execution.path.startswith("execution:unattached:"):
+            cwd = execution.path[len("execution:unattached:"):]
+        return os.path.realpath(os.path.expanduser(cwd)) if cwd else ""
+
+    native_by_cwd: dict[str, list[tuple[Stage, Worker]]] = {}
+    for execution in stages:
+        if not execution.execution_id or not (cwd := execution_cwd(execution)):
+            continue
+        for worker in execution.snap.workers:
+            if worker.harness == "codex" and worker.native_id:
+                native_by_cwd.setdefault(cwd, []).append((execution, worker))
+
+    record_cwds: dict[tuple[int, int], str] = {}
+    for station, target, record in records:
+        if record.get("native_id") or target.native_id:
+            continue
+        if target.harness != "codex" or not target.start:
+            continue
+        record_cwd = str(record.get("cwd") or "")
+        if not record_cwd:
+            continue
+        record_cwd = os.path.realpath(os.path.expanduser(record_cwd))
+        record_cwds[(id(station), id(target))] = record_cwd
+
+    # Time-only uniqueness includes every nearby Codex worker in the station, even one
+    # without a run record. Known per-worker record cwds keep workers from other dirs out.
+    workers_by_station: dict[int, list[Worker]] = {}
+    known_worker_cwds: dict[tuple[int, int], set[str]] = {}
+    for station, target, record in records:
+        cwd = str(record.get("cwd") or "")
+        if not cwd:
+            continue
+        normalized = os.path.realpath(os.path.expanduser(cwd))
+        key = (id(station), id(target))
+        known_worker_cwds.setdefault(key, set()).add(normalized)
+        workers_by_station[id(station)] = station.snap.workers
+
+    time_possible: list[tuple[Stage, Worker, Stage, Worker]] = []
+    pid_related: list[tuple[Stage, Worker, Stage, Worker]] = []
+    for station, target, record in records:
+        record_cwd = record_cwds.get((id(station), id(target)))
+        if not record_cwd:
+            continue
+        if record.get("native_id") or target.native_id or target.harness != "codex" or not target.start:
+            continue
+        station_workers = workers_by_station.get(id(station), station.snap.workers)
+        pool = [worker for worker in station_workers
+                if worker.harness == "codex" and worker.start and not worker.native_id
+                and (not known_worker_cwds.get((id(station), id(worker)))
+                     or record_cwd in known_worker_cwds[(id(station), id(worker))])]
+        for execution, native in native_by_cwd.get(record_cwd, []):
+            owners = [worker for worker in pool if worker.pid is not None
+                      and (native.pid == worker.pid
+                           or (native.pid is not None and _co_ancestor_in(native.pid, {worker.pid}, procs)))]
+            if len(owners) == 1:
+                if owners[0] is target:
+                    pid_related.append((station, target, execution, native))
+                continue
+            if len(owners) > 1:
+                continue
+            for worker in pool:
+                if abs(native.start - worker.start) > _co_dup_window_s:
+                    continue
+                if _co_codex_pid_conflicts(native, worker, station_workers, procs):
+                    continue
+                time_possible.append((station, worker, execution, native))
+
+    # A worker's pid is useful only while that worker is live and only for a native
+    # row that started shortly after it. Multiple pid-related natives make that
+    # evidence ambiguous, so send those pairs through the mutually-unique time rule.
+    pid_related = list({(id(station), id(target), id(execution), id(native)):
+                        (station, target, execution, native)
+                        for station, target, execution, native in pid_related}.values())
+    related_by_target: Counter[int] = Counter(id(target) for _, target, _, _ in pid_related)
+    pid_possible: list[tuple[Stage, Worker, Stage, Worker]] = []
+    for station, target, execution, native in pid_related:
+        pid_is_valid = (
+            related_by_target[id(target)] == 1
+            and target.state in LIVE_STATES
+            and target.pid is not None
+            and target.pid in procs
+            and native.start >= target.start
+            and native.start - target.start <= 120
+        )
+        if pid_is_valid:
+            pid_possible.append((station, target, execution, native))
+        elif abs(native.start - target.start) <= _co_dup_window_s:
+            station_workers = workers_by_station.get(id(station), station.snap.workers)
+            if not _co_codex_pid_conflicts(native, target, station_workers, procs):
+                time_possible.append((station, target, execution, native))
+
+    time_possible = list({(id(station), id(target), id(execution), id(native)): (station, target, execution, native)
+                          for station, target, execution, native in time_possible}.values())
+    by_target: Counter[int] = Counter(id(target) for _, target, _, _ in time_possible)
+    by_native: Counter[int] = Counter(id(native) for _, _, _, native in time_possible)
+    unique_time = [(station, target, execution, native)
+                   for station, target, execution, native in time_possible
+                   if by_target[id(target)] == 1 and by_native[id(native)] == 1
+                   and (id(station), id(target)) in record_cwds]
+    return pid_possible + unique_time
 
 
 _co_unlinked_run_cache: dict[str, tuple[int, list[dict]]] = {}
@@ -8915,8 +9519,208 @@ def _co_link_run_record(execution: Stage, stations: dict[str, Stage]) -> str:
     return next(iter(matches)) if len(matches) == 1 else ""
 
 
-def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
+def _co_apply_manager_lineage(stages: list[Stage]) -> list[Stage]:
+    """Promote known session owners from their workers' schema-2 lineage before native attachment."""
+    by_session: dict[str, Stage] = {}
+    for stage in stages:
+        if stage.session_id:
+            current = by_session.get(stage.session_id)
+            if current is None or (stage.lead_state == "live" and current.lead_state != "live"):
+                by_session[stage.session_id] = stage
+
+    known_sessions = set(by_session)
+    known_sessions.update(worker.native_id for stage in stages for worker in stage.snap.workers if worker.native_id)
+
+    # The on-disk record is authoritative for the manager's lineage. Keep its parent's worker group
+    # distinct by reading only the lineage fields; stage/session worker identity remains unchanged.
+    records: list[tuple[Stage, Worker, str, str, str, int, tuple[int, ...], float]] = []
+    for source in stages:
+        directory = source.dir or source.path
+        for worker in source.snap.workers:
+            if not worker.name:
+                continue
+            lead_session, parent, root, depth, ancestors, launched_at = _co_worker_lineage(directory, worker.name)
+            if (lead_session and parent and root and depth >= 2 and lead_session != parent
+                    and parent in known_sessions):
+                records.append((source, worker, lead_session, parent, root, depth - 1, ancestors, launched_at))
+
+    # A manager launched with a pid file may have no native id. Its children's recorded process ancestry
+    # positively links that launch row to the promoted session; require one manager per pid.
+    pid_matches: dict[int, list[tuple[Stage, Stage, Worker, str, str, str, int, float]]] = {}
+    for owner_source, _, sid, parent, root, depth, ancestors, launched_at in records:
+        for parent_stage in stages:
+            if parent_stage.session_id != parent:
+                continue
+            for worker in parent_stage.snap.workers:
+                if worker.pid is None or worker.pid not in ancestors or worker.native_id:
+                    continue
+                if worker.has_report and worker.session != sid:
+                    continue
+                pid_matches.setdefault(worker.pid, []).append(
+                    (owner_source, parent_stage, worker, sid, parent, root, depth, launched_at))
+    unique_pid_matches: dict[int, tuple[Stage, Stage, Worker, str, str, str, int, float]] = {}
+    for pid, matches in pid_matches.items():
+        managers = {item[3] for item in matches}
+        rows = {id(item[2]) for item in matches}
+        if len(managers) == 1 and len(rows) == 1:
+            launches = [item[7] for item in matches if item[7] > 0]
+            earliest_launch = min(launches) if launches else 0.0
+            worker = matches[0][2]
+            finished_end_ok = (
+                worker.state in LIVE_STATES
+                or (worker.end is not None and worker.end > 0 and worker.end + 5.0 >= earliest_launch)
+            )
+            if (worker.start > 0 and earliest_launch > 0
+                    and worker.start <= earliest_launch + 5.0 and finished_end_ok):
+                unique_pid_matches[pid] = (*matches[0][:7], earliest_launch)
+
+    for pid, (owner_source, parent_stage, worker, sid, parent, root, depth, _) in unique_pid_matches.items():
+        kind = worker.harness or ""
+        manager = by_session.get(sid)
+        label = worker.title or worker.name or sid[-8:]
+        if manager is None:
+            manager = Stage(
+                path=f"{owner_source.path}#{sid}", dir=owner_source.dir or owner_source.path, label=label,
+                snap=Snapshot(title=label, now=parent_stage.snap.now, groups=[]),
+                lead_state="live" if worker.state in LIVE_STATES else "gone", lead_pid=worker.pid,
+                lead_since=worker.start, lead_kind=kind, session_id=sid,
+                session_name=_co_session_label(label, sid, label), parent=parent, root_session=root,
+                launch_depth=depth, tag=harness_label(kind, worker.account) if kind else "",
+                lead_model=worker.model, state="active" if worker.state in LIVE_STATES else "idle",
+                activity=worker.start, account=worker.account, harness=kind,
+            )
+            stages.append(manager)
+            by_session[sid] = manager
+            continue
+        has_live_lead = manager.lead_state == "live" or manager.lead_pid is not None
+        if not manager.label:
+            manager.label = label
+        if not manager.snap.title:
+            manager.snap.title = label
+        if not has_live_lead:
+            manager.lead_state = "live" if worker.state in LIVE_STATES else "gone"
+        if manager.lead_pid is None:
+            manager.lead_pid = worker.pid
+        if not manager.lead_since:
+            manager.lead_since = worker.start
+        manager.lead_kind = manager.lead_kind or kind
+        manager.lead_model = manager.lead_model or worker.model
+        manager.tag = manager.tag or (harness_label(kind, worker.account) if kind else "")
+        manager.account = manager.account or worker.account
+        manager.harness = manager.harness or kind
+        manager.session_name = manager.session_name or _co_session_label(label, sid, label)
+        if not manager.parent:
+            manager.parent, manager.root_session, manager.launch_depth = parent, root, depth
+        if not has_live_lead:
+            manager.state = "active" if worker.state in LIVE_STATES else "idle"
+        manager.activity = max(manager.activity, worker.start)
+
+    # Some native managers exist only as a worker row under their launcher. Their own stage workers
+    # prove the session identity and lineage, so create the manager station before attachment can
+    # treat that native row as an ordinary worker.
+    for owner_source, _, sid, parent, root, depth, _, _ in records:
+        native = next(((stage, worker) for stage in stages for worker in stage.snap.workers
+                       if worker.native_id == sid), None)
+        if native is None:
+            continue
+        parent_stage, worker = native
+        label = worker.title or worker.name or sid[-8:]
+        kind = worker.harness or ""
+        manager = by_session.get(sid)
+        if manager is None:
+            manager = Stage(
+                path=f"{owner_source.path}#{sid}", dir=owner_source.dir or owner_source.path, label=label,
+                snap=Snapshot(title=label, now=parent_stage.snap.now, groups=[]),
+                lead_state="live" if worker.state in LIVE_STATES else "gone", lead_pid=worker.pid,
+                lead_since=worker.start,
+                lead_kind=kind, session_id=sid, session_name=_co_session_label(label, sid, label),
+                parent=parent, root_session=root, launch_depth=depth,
+                tag=harness_label(kind, worker.account) if kind else "", lead_model=worker.model,
+                state="active" if worker.state in LIVE_STATES else "idle", activity=worker.start,
+                account=worker.account, native_id=sid, harness=kind,
+            )
+            stages.append(manager)
+            by_session[sid] = manager
+        else:
+            # A session bucket can predate the native row. Fill gaps from the row before it is
+            # removed, but don't let a historical worker row erase a discovered live lead.
+            has_live_lead = manager.lead_state == "live" or manager.lead_pid is not None
+            if not manager.label:
+                manager.label = label
+            if not manager.snap.title:
+                manager.snap.title = label
+            if not has_live_lead:
+                manager.lead_state = "live" if worker.state in LIVE_STATES else "gone"
+            if manager.lead_pid is None:
+                manager.lead_pid = worker.pid
+            if not manager.lead_since:
+                manager.lead_since = worker.start
+            manager.lead_kind = manager.lead_kind or kind
+            manager.tag = manager.tag or (harness_label(kind, worker.account) if kind else "")
+            manager.lead_model = manager.lead_model or worker.model
+            manager.account = manager.account or worker.account
+            manager.native_id = manager.native_id or sid
+            manager.harness = manager.harness or kind
+            manager.session_name = manager.session_name or _co_session_label(label, sid, label)
+            if not has_live_lead:
+                manager.state = "active" if worker.state in LIVE_STATES else "idle"
+            manager.activity = max(manager.activity, worker.start)
+
+    folded_pid_rows = {id(item[2]) for item in unique_pid_matches.values()}
+    for source, worker, sid, parent, root, depth, _, _ in records:
+        manager = by_session.get(sid)
+        if manager is None:
+            continue
+        if not manager.parent and not manager.root_session and not manager.launch_depth:
+            manager.parent, manager.root_session, manager.launch_depth = parent, root, depth
+
+    moved: dict[int, list[Worker]] = {}
+    changed: set[int] = set()
+    # A row carrying the manager's native session id is the manager itself, not another worker.
+    for stage in stages:
+        kept: list[Worker] = []
+        for worker in stage.snap.workers:
+            if id(worker) in folded_pid_rows:
+                changed.add(id(stage))
+                continue
+            if worker.native_id and by_session.get(worker.native_id) is not None and by_session[worker.native_id] is not stage:
+                changed.add(id(stage))
+                continue
+            record = next((item for item in records if item[0] is stage and item[1] is worker), None)
+            owner = by_session.get(record[2]) if record is not None else None
+            if (owner is not None and record is not None and record[2] == owner.session_id
+                    and owner is not stage and owner.session_id != stage.session_id):
+                worker.session = record[2]
+            if owner is None or owner is stage:
+                kept.append(worker)
+                continue
+            worker.home = worker.home or os.path.abspath(stage.dir or stage.path)
+            moved.setdefault(id(owner), []).append(worker)
+            changed.add(id(stage))
+        if len(kept) != len(stage.snap.workers):
+            stage.snap.workers = kept
+
+    for manager in by_session.values():
+        additions = moved.get(id(manager), [])
+        if additions:
+            known = {(worker.key, worker.home, worker.pid) for worker in manager.snap.workers}
+            manager.snap.workers = _co_order_workers(manager.snap.workers + [
+                worker for worker in additions if (worker.key, worker.home, worker.pid) not in known
+            ])
+            manager.snap.groups = _co_groups(manager.snap.workers, manager.snap.milestones)
+            manager.live = sum(worker.state in LIVE_STATES for worker in manager.snap.workers)
+            manager.solo = False
+    for stage in stages:
+        if id(stage) in changed:
+            stage.live = sum(worker.state in LIVE_STATES for worker in stage.snap.workers)
+            stage.snap.groups = _co_groups(stage.snap.workers, stage.snap.milestones)
+    return stages
+
+
+def _co_attach_executions(stages: list[Stage],
+                          procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> list[Stage]:
     """Attach native execution members to exact live station identities and tag leftovers."""
+    procs = procs or {}
     stations: dict[str, Stage] = {}
     for stage in stages:
         key = _co_station_exec_key(stage)
@@ -8954,6 +9758,9 @@ def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
                              if os.path.normpath(os.path.join(station.dir, worker.name)) == os.path.normpath(execution.cwd)), None)
             if existing is None:
                 continue
+            if (existing.native_id and native_worker.native_id
+                    and existing.native_id != native_worker.native_id):
+                continue
             for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
                                "brief_text", "result_text", "purpose_source", "output_available"):
                 value = getattr(native_worker, field_name)
@@ -8978,15 +9785,26 @@ def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
             existing = (next((worker for worker in target[0].snap.workers if worker.name == target[1]), None)
                         if target is not None else None)
             if existing is not None:
-                for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
-                                   "brief_text", "result_text", "purpose_source", "output_available"):
-                    value = getattr(native_worker, field_name)
-                    if value:
-                        setattr(existing, field_name, value)
+                if (existing.native_id and native_worker.native_id
+                        and existing.native_id != native_worker.native_id):
+                    continue
+                _co_fold_worker_into(existing, native_worker)
                 execution.snap.workers.remove(native_worker)
                 merged = True
                 break
         if merged and not execution.snap.workers:
+            dropped.add(id(execution))
+    # Historical Codex records did not persist native_id. Resolve only one-to-one pairs in the same cwd;
+    # ambiguous parallel launches remain visible as separate rows.
+    for station, existing, execution, native_worker in _co_codex_legacy_pairs(stages, procs):
+        if id(execution) in dropped or native_worker not in execution.snap.workers:
+            continue
+        if (existing.native_id and native_worker.native_id
+                and existing.native_id != native_worker.native_id):
+            continue
+        _co_fold_worker_into(existing, native_worker)
+        execution.snap.workers.remove(native_worker)
+        if not execution.snap.workers:
             dropped.add(id(execution))
     for stage in stages:
         if not stage.execution_id:
@@ -9081,13 +9899,15 @@ def _co_dedupe_sessions(stages: list[Stage]) -> list[Stage]:
             if other is win:
                 continue
             _co_merge_stage_fields(win, other)
-            if win.lead_pid is None and not (win.lead_kind == "opencode" and win.lead_state == "background"):
-                continue
-            have = {w.name for w in win.snap.workers}
             for wk in other.snap.workers:
-                if wk.name in have:      # the same worker seen from two stage dirs counts once
+                key = wk.key
+                home = wk.home
+                wk.home = wk.home or os.path.abspath(other.dir or other.path)
+                if any(_co_same_worker(w.key, w.home, w.pid, key, home, wk.pid) for w in win.snap.workers) or any(
+                        w.pid not in (None, 0) and wk.pid not in (None, 0) and w.pid == wk.pid
+                        and (w.key == key or not w.home or not wk.home)
+                        for w in win.snap.workers):
                     continue
-                wk.home = wk.home or other.dir or other.path
                 win.snap.workers.append(wk)
                 win.live += wk.state in LIVE_STATES
             win.snap.reviews.extend(other.snap.reviews)
@@ -9694,7 +10514,7 @@ class GlobalCollector:
                             child_sid = sidecar.get("sessionId", "")
                             if isinstance(child_sid, str) and child_sid:
                                 self._co_child_sessions[parent] = child_sid
-                        meta = _co_lead_session("", lead, self._co_child_session(parent))
+                        meta = _co_lead_session("", lead, self._co_child_session(parent), procs)
                         parent_sid = meta.get("session_id")
                         if isinstance(parent_sid, str) and parent_sid:
                             ancestry[pid] = (execution_key(lead.kind.split()[0], account, parent_sid), "")
@@ -9838,6 +10658,8 @@ class GlobalCollector:
             root = root or ExecutionRecord(root_id, role="lead", linkage="unknown")
             unattached = root_id.startswith("unattached:")
             global_unattached = root_id == "unattached:global"
+            if root_item is None and members:
+                root.title = members[0].record.title
             if root_item is None and members and not unattached:
                 identities = {(item.record.harness, item.record.account) for item in members
                               if item.record.harness and item.record.account}
@@ -9887,7 +10709,8 @@ class GlobalCollector:
                 solo=live and not workers, state=state,
                 activity=activity_at, cwd=root.cwd, execution_id=root.execution_id,
                 account=root.account, parent_id=root.parent_id, root_id=root_id,
-                goal=root.goal, brief_text=root_item.brief.splitlines() if root_item is not None else [], linkage=root.linkage,
+                goal=root.goal, session_name=root.title,
+                brief_text=root_item.brief.splitlines() if root_item is not None else [], linkage=root.linkage,
                 native_id=root.native_id, outcome=root.outcome, purpose_source=root.purpose_source,
                 unlinked=global_unattached, unattached=global_unattached or folded,
             )
@@ -10104,7 +10927,7 @@ class GlobalCollector:
             if path in virtual:
                 # a session with no stage dir: its lead is present by construction, so never idle or dismissed
                 if lead is not None:
-                    meta = _co_lead_session(path, lead, self._co_child_session(lead.pid))
+                    meta = _co_lead_session(path, lead, self._co_child_session(lead.pid), self._co_proc_table())
                     lead_activity = float(meta.get("activity", 0.0) or 0.0)
                     extras = (self._co_opencode_extras(lead, str(meta["session_id"]), now, set(), set())
                               if lead.kind == "opencode" else [])
@@ -10185,7 +11008,8 @@ class GlobalCollector:
             last = _co_last_activity(snap)
             if lead is None and live == 0 and last < now - SESSION_GAP_S:   # the snapshot only holds the latest session
                 last = max(last, _co_stage_status(path)[0])
-            meta = _co_lead_session(path, lead, self._co_child_session(lead.pid) if lead else "")
+            meta = _co_lead_session(path, lead, self._co_child_session(lead.pid) if lead else "",
+                                    self._co_proc_table())
             live_sid = meta["session_id"]
             if lead is not None and lead.kind == "opencode":
                 extras = self._co_opencode_extras(lead, str(live_sid), now,
@@ -10293,7 +11117,8 @@ class GlobalCollector:
                                if not any(path == real_path for real_path, _ in self._co_found)}
         stages, newly_dismissed = _co_filter_dismissed_stages(stages, appended_dismissals)
         dismissed_count += newly_dismissed
-        stages = _co_attach_executions(stages)
+        stages = _co_apply_manager_lineage(stages)
+        stages = _co_attach_executions(stages, self._co_proc_table())
         stages = _co_adopt_by_session(stages)
         # A real stage row wins duplicate session ids over a virtual row; workers break ties.
         stages = _co_dedupe_sessions(stages)
@@ -10363,7 +11188,10 @@ class GlobalCollector:
     def detail(self, stage_path: str, name: str, tab: str) -> list[str]:
         collector = self.collector_for(stage_path)
         stage = next((s for s in self._co_last_stages if s.path == stage_path), None)
-        wk = next((w for w in stage.snap.workers if w.name == name), None) if stage is not None else None
+        wk = next((w for w in stage.snap.workers if w.key == name), None) if stage is not None else None
+        if wk is None and stage is not None:
+            matches = [w for w in stage.snap.workers if w.name == name]
+            wk = matches[0] if len(matches) == 1 else None
         if wk is not None and wk.home:     # a worker launched from another project's stage dir
             collector = self._co_collectors.get(wk.home) or collector
         execution_id = wk.execution_id if wk is not None else stage.execution_id if stage is not None else ""
@@ -10377,7 +11205,7 @@ class GlobalCollector:
                 text = evidence.brief if kind == "brief" else evidence.result
                 if text:
                     return text.replace("\t", "    ").splitlines()[:_co_max_detail]
-        return collector.detail(name, tab) if collector is not None else []
+        return collector.detail(wk.name if wk is not None else name, tab) if collector is not None else []
 
     def close(self) -> None:
         collectors, self._co_collectors = list(self._co_collectors.values()), {}
@@ -10663,6 +11491,7 @@ def files_page(stage_dir: str, worker: Worker | None) -> list[str]:
     else the files under its stage folder. A read-only worker gets one line saying no changes are expected."""
     if worker is None:
         return ["no worker selected: move the cursor onto a worker row"]
+    stage_dir = worker.home or stage_dir
     read_only = worker.is_review or worker.job in _co_read_only_jobs
     cwd = _co_brief_cwd(_co_brief_path(stage_dir, worker.name))
     if cwd and os.path.exists(os.path.join(cwd, ".git")):
@@ -11219,7 +12048,7 @@ _dm_GLOBAL_ROWS = (
     # (session id, label, session name, tag, harness, model, kind, state, started offset, phase, stream, lead pid, resume command)
     ("demo-lead", _dm_TITLE, "ship the api", "CC·P", "claude", "sonnet-5.5", "claude", "active", -1500.0, "build", "api-routes", 48100, ""),
     (None, _dm_SOLO_LABEL, "side tools", "CC·P", "claude", "haiku-5.5", "claude", "active", _dm_SOLO_SINCE, "build", "side-tools", 48902, ""),
-    ("demo-docs", "docs-site", "docs pass", "CDX", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
+    ("demo-docs", "docs-site", "docs pass", "Codex", "codex", "gpt-5.5", "codex", "idle", -5400.0, "review", "docs-pass", 48300, ""),
     ("demo-old", "old-spike", "old spike", "CC·P", "claude", "opus-5.5", "claude", "closed", -20000.0, "build", "spike", None, "claude --resume demo-old"),
 )
 
@@ -12402,6 +13231,7 @@ Pure drawing: takes the quota data and a cursor, returns lines. Imports only wid
 
 
 
+_UV_HIDDEN = frozenset({"local"})   # the local model has no quota: its bar never leaves 0
 _UV_ON_PACE = 5.0          # points either side of pace that still read as "on pace"
 _UV_WIN_SECS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400, "thirty_day": 30 * 86400}
 
@@ -12537,6 +13367,8 @@ def _uv_groups(accounts: list[QuotaAccount], spend_shown: set[str]) -> tuple[lis
     quiet: list[str] = []
     seen: set[str] = set()
     for a in accounts:
+        if a.name in _UV_HIDDEN:
+            continue
         if a.credit is not None:
             if a.name in spend_shown:
                 continue    # a spend block below carries it
@@ -13308,17 +14140,24 @@ def _og_local(*values: str) -> bool:
 
 
 def _og_worker_harness(wk: Worker) -> str:
-    mapping = {"claude": "CC", "codex": "Codex", "opencode": "OCode", "cursor": "Cursr", "openclaw": "OClaw"}
-    return mapping.get((wk.log.harness or "").lower(), mapping.get(wk.family.lower(), "—"))
+    logged = (wk.log.harness or "").lower()
+    harness = (wk.harness if logged == "unknown" else logged) or wk.harness
+    harness = harness.lower()
+    if harness:
+        account = wk.account or ("openclaw" if harness == "openclaw" else "" if harness == "claude" else "personal")
+        return harness_label(harness, account) or "—"
+    return harness_label(wk.family.lower()) or "—"
 
 
 def _og_stage_harness(stage: Stage) -> str:
     if stage.tag:
         return stage.tag
     kind = (stage.lead_kind or "").lower()
-    for key, label in (("claude", "CC"), ("codex", "Codex"), ("opencode", "OCode"), ("cursor", "Cursr"), ("openclaw", "OClaw")):
+    for key in ("claude", "codex", "t3", "opencode", "cursor", "openclaw"):
         if key in kind:
-            return label
+            account = "work" if key == "claude" and "work" in kind else stage.account
+            account = account or ("openclaw" if key == "openclaw" else "" if key == "claude" else "personal")
+            return harness_label(key, account) or "—"
     return "OClaw" if stage.vitals else "—"
 
 
@@ -15341,7 +16180,11 @@ def _cxk_stage(gs: GlobalSnapshot, path: str) -> Stage | None:
 def _cxk_worker(stage: Stage, name: str) -> Worker | None:
     """The worker called `name` in the stage's snapshot, or None."""
     workers = (stage.snap.workers if stage.snap is not None else []) or []
-    return next((wk for wk in workers if wk.name == name), None)
+    keyed = next((wk for wk in workers if wk.key == name), None)
+    if keyed:
+        return keyed
+    matches = [wk for wk in workers if wk.name == name]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _cxk_row(gs: GlobalSnapshot, sel: tuple[str, str, str] | None) -> tuple[Stage | None, Worker | None, str]:
@@ -15375,7 +16218,7 @@ def _cxk_key_target(gs: GlobalSnapshot, row_key: str) -> tuple[Stage | None, Wor
 
 def _cxk_row_key(stage: Stage, worker: Worker | None) -> str:
     """The row key a confirm stores: the stage path, then the worker name ("" for a lead row)."""
-    return f"{stage.path}|{worker.name if worker is not None else ''}"
+    return f"{stage.path}|{worker.key if worker is not None else ''}"
 
 
 def _cxk_identity(gs: GlobalSnapshot, row_key: str) -> tuple[int | None, int | None, str, str] | None:
@@ -15793,7 +16636,7 @@ _tu_STEPS: tuple[TutStep, ...] = (
              "Middle: one block per project. Each session is a row; a session that started helpers (workers) lists them underneath.",
              "Bottom: a strip of usage, events, logs and metrics, then the key line. The key line changes with where you are.")),
     TutStep("Reading a row",
-            ("LEAD is the session you talk to. WORKER is a helper it started. HARN is the tool (CC·P Claude personal, CDX Codex, OCode, Cursr).",
+            ("LEAD is the session you talk to. WORKER is a helper it started. HARN is the tool (CC·P Claude personal, Codex, OCode, Cursr).",
              "The mark in front of a worker is its state: a spinner is running, ○ quiet for a while, ✖ failed, ✔ finished.",
              "CTX and TOKENS say how full the context is and what it has used; COST is money spent; TOOLS counts tool calls.")),
     TutStep("Move the cursor",
@@ -16660,7 +17503,7 @@ def _sv_key(ui: UIState, stage: Stage, key: str, rows: int) -> str:
     elif key == "end":
         ui.sel = max(0, count - 1)
     elif key in ("enter", "space", "o", "right", "l") and count:
-        return "worker:" + stage.snap.workers[ui.sel].name
+        return "worker:" + stage.snap.workers[ui.sel].key
     return ""
 
 
@@ -16812,7 +17655,7 @@ def _rd_accent_color(wk: Worker, t: float) -> _wd_Rgb:
 
 def _rd_flash(ui: UIState, wk: Worker, t: float) -> tuple[_wd_Rgb, float] | None:
     """(target colour, fraction faded) while a worker's flash is running, else None."""
-    ts = ui.flashes.get(wk.name)
+    ts = ui.flashes.get(wk.key)
     if ts is None:
         return None
     age = t - ts
@@ -16950,10 +17793,15 @@ def _rd_plan(snap: Snapshot, ui: UIState) -> tuple[list[Group], list[tuple[int, 
     if ui.density != "full" or not currents:
         live, fin = _rd_split(snap, list(range(len(snap.workers))))
         return [], live, fin, []
-    index = {wk.name: i for i, wk in enumerate(snap.workers)}
+    index = {wk.key: i for i, wk in enumerate(snap.workers)}
+    by_name: dict[str, list[int]] = {}
+    for i, wk in enumerate(snap.workers):
+        by_name.setdefault(wk.name, []).append(i)
 
     def members(group: Group) -> list[int]:
-        return [index[name] for name in group.workers if name in index]
+        if group.worker_keys:
+            return [index[key] for key in group.worker_keys if key in index]
+        return [by_name[name][0] for name in group.workers if len(by_name.get(name, [])) == 1]
 
     live: list[tuple[int, Worker]] = []
     fin: list[tuple[int, Worker]] = []
@@ -16987,8 +17835,11 @@ def _rd_cursor_stop(snap: Snapshot, ui: UIState) -> str:
     if _rd_wstop(ui.sel) in stops:
         return _rd_wstop(ui.sel)
     if 0 <= ui.sel < len(snap.workers):
-        name = snap.workers[ui.sel].name
-        line = next((_RD_GROUP + group.key for group in snap.groups if name in group.workers), "")
+        worker = snap.workers[ui.sel]
+        line = next((_RD_GROUP + group.key for group in snap.groups
+                     if worker.key in group.worker_keys or
+                     (not group.worker_keys and worker.name in group.workers and
+                      sum(item.name == worker.name for item in snap.workers) == 1)), "")
         if line in stops:
             return line
         if line and _RD_GROUP + _RD_EARLIER in stops:   # its group is inside the folded "earlier" line
@@ -17166,9 +18017,9 @@ def _rd_station_keys(snap: Snapshot, ui: UIState, sel: int, stage: Stage | None)
     elif 0 <= sel < len(snap.workers):
         wk = snap.workers[sel]
         if _rd_is_live(wk):
-            keys.append(("Enter", "fold" if wk.name in ui.expanded else "unfold"))
+            keys.append(("Enter", "fold" if wk.key in ui.expanded else "unfold"))
         else:
-            keys.append(("Enter", "collapse" if wk.name in ui.expanded else "expand"))
+            keys.append(("Enter", "collapse" if wk.key in ui.expanded else "expand"))
         keys.append(("Space", "open"))
     if ui.gpage in ("stage", "worker"):
         keys.append(("Esc", "back"))
@@ -17493,7 +18344,10 @@ def _rd_group_head(group: Group, t: float, w: int) -> str:
 def _rd_group_line(snap: Snapshot, group: Group, opened: bool, selected: bool, now: float, w: int) -> str:
     """An earlier group on one line: ▸ folded or ▾ open, its label, worker count, ✔ or ✖ with the time it ended (or
     ● running), then how long it ran."""
-    failed = any(wk.state == FAILED for wk in snap.workers if wk.name in group.workers)
+    members = (set(group.worker_keys) if group.worker_keys else
+               {wk.key for wk in snap.workers if wk.name in group.workers and
+                sum(item.name == wk.name for item in snap.workers) == 1})
+    failed = any(wk.state == FAILED for wk in snap.workers if wk.key in members)
     mark = _wd_c("▾ " if opened else "▸ ", _wd_C_BLUE if selected else _wd_C_MUTED)
     name = _wd_c(_wd_clean(group.label), _wd_C_BLUE if selected else _wd_C_TEXT, bold=True)
     if group.finished:
@@ -17634,7 +18488,7 @@ def _rd_workers_box(snap: Snapshot, ui: UIState, body: list[str], own: list[int 
         if isinstance(owner, str):   # an earlier group's line
             _rd_hit(ui, k + 1, k + 1, 1, w - 2, "group", owner[len(_RD_GROUP):])
         elif owner is not None:
-            _rd_hit(ui, k + 1, k + 1, 1, w - 2, "select", snap.workers[owner].name)
+            _rd_hit(ui, k + 1, k + 1, 1, w - 2, "select", snap.workers[owner].key)
     return _wd_box(body, w, h, title)
 
 
@@ -17838,7 +18692,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
 
     def worker_block(i: int, wk: Worker) -> list[str]:
         # a finished worker shows its summary below its row while it is in ui.expanded
-        opened = wk.name in ui.expanded
+        opened = wk.key in ui.expanded
         block = [row(i, wk, rail if i == sel else " ", opened)]
         if opened:
             block += [rail + ln for ln in _rd_grid_detail(wk, w)]
@@ -17856,7 +18710,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
     keep = 1 if fin else 0          # the "+N more finished" line
     # the richest card level at which every open live card and every other row still fit
     room = avail - len(body) - keep
-    open_live = [(i, wk) for i, wk in live if wk.name in ui.expanded]
+    open_live = [(i, wk) for i, wk in live if wk.key in ui.expanded]
     flashes = {i: _rd_flash(ui, wk, t) for i, wk in open_live}
     rests: dict[int, tuple[list[str], tuple[_wd_Rgb, float] | None]] = {}
     for lvl in range(1, len(_rd_LEVELS)):
@@ -17904,7 +18758,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
         if opened:
             earlier_blocks += [(i, worker_block(i, wk)) for i, wk in g_live + g_fin]
     sel_owner: int | str | None = int(cursor[1:]) if cursor.startswith("w") else cursor
-    open_k = next((k for k, (_, wk) in enumerate(fin) if wk.name in ui.expanded), None)
+    open_k = next((k for k, (_, wk) in enumerate(fin) if wk.key in ui.expanded), None)
     # the current group's finished rows keep at most half of what is left; the earlier groups get the rest
     f_need = sum(len(block) for _, block in fin_blocks)
     e_need = sum(len(block) for _, block in earlier_blocks)
@@ -19587,13 +20441,17 @@ def _rd_g_is_section_row(kind: str, name: str) -> bool:
 def _rd_g_task_list(row: _rd_GRow) -> list[Group]:
     """A session's tasks, newest first. Workers that no task holds (a hand-built snapshot) form one more task."""
     groups = list(row.stage.snap.groups)
-    held = {name for group in groups for name in group.workers}
-    loose = [wk for wk in row.workers if wk.name not in held]
+    held = {key for group in groups for key in group.worker_keys}
+    held_names = {name for group in groups if not group.worker_keys for name in group.workers}
+    name_counts = {name: sum(wk.name == name for wk in row.workers) for name in {wk.name for wk in row.workers}}
+    loose = [wk for wk in row.workers if wk.key not in held and not (wk.name in held_names and name_counts[wk.name] == 1)]
     if loose:
         live = [wk for wk in loose if wk.state in LIVE_STATES]
         extra = Group(label="workers", workers=[wk.name for wk in loose], started=min(wk.start for wk in loose),
                       done=len(loose) - len(live), total=len(loose), live=len(live),
-                      current=bool(live) or not any(group.current for group in groups))
+                      current=bool(live) or not any(group.current for group in groups),
+                      worker_keys=[wk.key for wk in loose],
+                      stage=os.path.basename(os.path.normpath(loose[0].home)) if loose[0].home else "")
         groups = [extra] + groups if live else groups + [extra]
     return groups
 
@@ -19602,22 +20460,32 @@ def _rd_g_tasks(row: _rd_GRow) -> tuple[list[tuple[Group, list[Worker]]], int]:
     """A session's tasks, newest first, each with its workers (live first, then finished, newest first), and how many
     of them list their workers: a task with a live or failed worker (kept first, in order). A finished task is one line that
     Enter opens (the user 2026-10-24: done workers must not sit open); the older ones fold under `+N done`."""
-    by_name = {wk.name: wk for wk in row.workers}
-    nested = {wk.name for wk in row.workers if wk.level and wk.parent in by_name}   # listed under their launcher, not in a task of their own
+    by_key = {wk.key: wk for wk in row.workers}
+    by_name: dict[str, list[Worker]] = {}
+    for wk in row.workers:
+        by_name.setdefault(wk.name, []).append(wk)
+    nested = {wk.key for wk in row.workers if wk.level and (wk.parent_key in by_key or
+              (not wk.parent_key and len(by_name.get(wk.parent, [])) == 1))}
     kids: dict[str, list[Worker]] = {}
     for wk in row.workers:
-        if wk.name in nested:
-            kids.setdefault(wk.parent, []).append(wk)
+        parent_key = wk.parent_key or (by_name[wk.parent][0].key if len(by_name.get(wk.parent, [])) == 1 else "")
+        if wk.key in nested and parent_key:
+            kids.setdefault(parent_key, []).append(wk)
 
     def with_kids(wk: Worker, seen: frozenset[str]) -> list[Worker]:
         out = [wk]
-        for kid in kids.get(wk.name, ()):
-            if kid.name not in seen:
-                out += with_kids(kid, seen | {wk.name})
+        for kid in kids.get(wk.key, ()):
+            if kid.key not in seen:
+                out += with_kids(kid, seen | {wk.key})
         return out
     tasks = []
     for group in _rd_g_task_list(row):
-        members = [by_name[name] for name in dict.fromkeys(group.workers) if name in by_name and name not in nested]   # a re-run brief lists its name twice
+        if group.worker_keys:
+            group_members = [by_key[key] for key in dict.fromkeys(group.worker_keys) if key in by_key]
+        else:
+            group_members = [by_name[name][0] for name in dict.fromkeys(group.workers)
+                             if len(by_name.get(name, [])) == 1]
+        members = [wk for wk in group_members if wk.key not in nested]
         if not members:
             continue
         live = [wk for wk in members if wk.state in LIVE_STATES]
@@ -19686,6 +20554,7 @@ class _rd_GNode:
     row: _rd_GRow
     kind: str
     name: str
+    worker_key: str = ""
     depth: int = 0
     prefix: str = ""
     cont: str = ""
@@ -19732,20 +20601,20 @@ def _rd_g_station_nodes(ui: UIState, row: _rd_GRow, depth: int) -> list[_rd_GNod
         return nodes
     kept, folded = _rd_g_unlinked_split(row)
     if folded:   # a session-unknown group lists its newest workers; Enter on the fold shows the rest
-        nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in kept)
+        nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in kept)
         nodes.append(_rd_GNode(row, "more", _rd_G_UNLINKED_MORE, depth=depth + 1))
         if (row.stage.path, "more", _rd_G_UNLINKED_MORE) in ui.gopen:
-            nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in folded)
+            nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in folded)
         return nodes
     tasks, shown = _rd_g_tasks(row)
     for _group, members in tasks[:shown]:
-        nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in members)
+        nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in members)
 
     def task_nodes(pairs: list[tuple[Group, list[Worker]]]) -> None:
         for group, members in pairs:
             nodes.append(_rd_GNode(row, "task", group.key, depth=depth + 1))
             if (row.stage.path, "task", group.key) in ui.gopen:
-                nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 2 + max(0, wk.level)) for wk in members)
+                nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 2 + max(0, wk.level)) for wk in members)
     direct, folded = _rd_g_task_split(tasks, shown)
     task_nodes(direct)   # a finished task: one line, Enter lists its workers
     if folded:
@@ -19836,12 +20705,13 @@ def _rd_g_nodes(gs: GlobalSnapshot, ui: UIState) -> list[_rd_GNode]:
 
 def _rd_g_layout(gs: GlobalSnapshot, ui: UIState) -> list[tuple[_rd_GRow, str, str]]:
     """Selectable session, worker, task, project and fold rows in screen order. Fill rows are not here."""
-    return [(node.row, node.kind, node.name) for node in _rd_g_nodes(gs, ui)]
+    return [(node.row, node.kind, node.worker_key if node.kind == "worker" else node.name) for node in _rd_g_nodes(gs, ui)]
 
 
 def global_rows(gs: GlobalSnapshot, ui: UIState) -> list[tuple[str, str, str]]:
     """Selectable rows, top to bottom: (stage path, kind, name). A heading and its fold row have no path."""
-    return [("" if _rd_g_is_section_row(node.kind, node.name) else node.row.stage.path, node.kind, node.name)
+    return [("" if _rd_g_is_section_row(node.kind, node.name) else node.row.stage.path, node.kind,
+             node.worker_key if node.kind == "worker" else node.name)
             for node in _rd_g_nodes(gs, ui)]
 
 
@@ -19891,7 +20761,7 @@ def _rd_g_metric_cells(nodes: list[_rd_GNode], now: float) -> list[_og_Cells]:
         elif node.kind == "stage":
             out.append(_og_stage_cells(node.row.stage, now))
         elif node.kind == "worker":
-            wk = next(x for x in node.row.workers if x.name == node.name)
+            wk = next(x for x in node.row.workers if x.key == node.worker_key)
             out.append(_og_worker_cells(wk, now))
     return out
 
@@ -20711,9 +21581,9 @@ def _rd_g_fill(gs: GlobalSnapshot, ui: UIState, nodes: list[_rd_GNode], plan: _o
             break
         if node.kind != "worker":
             continue
-        if (node.row.stage.path, "worker", node.name) in ui.gopen or (plan.control_center and node.name in ui.expanded):
+        if (node.row.stage.path, "worker", node.worker_key) in ui.gopen or (plan.control_center and node.worker_key in ui.expanded):
             continue   # an opened worker's detail already lists its steps; no second copy below it
-        wk = next((x for x in node.row.workers if x.name == node.name), None)
+        wk = next((x for x in node.row.workers if x.key == node.worker_key), None)
         if wk is None or wk.state not in LIVE_STATES or not wk.log.steps:
             continue
         width = max(10, cols - _wd_width(node.cont) - 2)
@@ -20783,7 +21653,7 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
         if node.kind == "stage" and not node.row.solo and _rd_g_is_open(ui, node.row):
             tasks, shown = _rd_g_tasks(node.row)
             if len(tasks) > 1:
-                heads.update({(node.row.stage.path, members[0].name): group
+                heads.update({(node.row.stage.path, members[0].key): group
                               for group, members in tasks[:shown] if members})
     blocks: list[list] = []      # [layout index, lines, the row of the selectable line]
     cc_command_hits: dict[int, int] = {}
@@ -20800,15 +21670,15 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
         elif node.kind == "stage":
             lines += _rd_g_session_lines(plan, node, names, short, ui, t, now, selected, _rd_g_swarm_workers(r))
         elif node.kind == "worker":
-            wk = next(x for x in r.workers if x.name == node.name)
-            if (r.stage.path, node.name) in heads:
-                lines.append(_rd_g_task_head(heads[(r.stage.path, node.name)], cols, node.depth))
-            cc_expanded = control_center and node.name in ui.expanded
+            wk = next(x for x in r.workers if x.key == node.worker_key)
+            if (r.stage.path, wk.key) in heads:
+                lines.append(_rd_g_task_head(heads[(r.stage.path, wk.key)], cols, node.depth))
+            cc_expanded = control_center and wk.key in ui.expanded
             wl, link_at = _rd_g_worker_row(r, wk, node.prefix, node.cont, plan, cols, t, selected,
-                                           (r.stage.path, "worker", node.name) in ui.gopen or cc_expanded, now, cc_expanded)
+                                           (r.stage.path, "worker", wk.key) in ui.gopen or cc_expanded, now, cc_expanded)
             if control_center:
                 finished = wk.state not in LIVE_STATES and wk.state != FAILED   # the user 2026-10-24: a done worker is one line
-                shown = cc_expanded or (r.stage.path, "worker", node.name) in ui.gopen   # opened by click or by Enter
+                shown = cc_expanded or (r.stage.path, "worker", wk.key) in ui.gopen   # opened by click or by Enter
                 command = [] if finished and not shown else command_lines(
                     wk, cols, cc_expanded, node.cont, plan.cols - plan.fixed - 1, 2)
                 if command:
@@ -20817,7 +21687,7 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
                 if link_at is not None:   # the command lines went in above the card, so its Files link moved down
                     link_at += len(command)
             if link_at is not None:
-                links[i] = (len(lines) + link_at, r.stage.path, node.name)
+                links[i] = (len(lines) + link_at, r.stage.path, wk.key)
             lines += wl
         elif node.kind == "task":
             group = next(g for g, _ in _rd_g_tasks(r)[0] if g.key == node.name)
@@ -20942,7 +21812,7 @@ def _rd_g_page(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float) 
         body = _sv_page(stage, ui, cols, max(0, rows - 1), t)
         return body[:max(0, rows - 1)] + [_rd_keyline(SV_KEYS, cols, ui, rows - 1)]
     if stage is not None and ui.gpage == "wk":
-        wk = next((x for x in stage.snap.workers if x.name == ui.gworker), None)
+        wk = next((x for x in stage.snap.workers if x.key == ui.gworker), None)
         if wk is not None:
             body = _wv_page(stage, wk, ui, cols, max(0, rows - 1), t)
             return body[:max(0, rows - 1)] + [_rd_keyline(WV_KEYS, cols, ui, rows - 1)]
@@ -21205,7 +22075,7 @@ def _work_dict(work: WorkState | None) -> dict | None:
 def _worker_dict(worker: Worker, now: float | None = None) -> dict:
     """One ``<worker>`` element; the same key set for every state."""
     log = worker.log
-    return {
+    result = {
         "name": worker.name,
         "state": worker.state,
         "title": worker.title,
@@ -21233,7 +22103,7 @@ def _worker_dict(worker: Worker, now: float | None = None) -> dict:
         },
         "cost": log.cost,
         "tool_counts": {cat: log.tool_counts.get(cat, 0) for cat in TOOL_CATS},
-        "tool_bins": _tool_bins(log.tool_pulses, now) if now is not None and _log_known(log) else None,
+        "tool_bins": _tool_bins(log.tool_pulses, now) if now is not None and _log_known(log) and not (worker.execution_id and not log.path) else None,   # a native row has a harness but no log to read
         "ctx_window": log.ctx_window,
         "level_tag": _text(worker.level_tag),
         "flags": sorted(worker.flags),
@@ -21245,6 +22115,8 @@ def _worker_dict(worker: Worker, now: float | None = None) -> dict:
         "brief_text": list(worker.brief_text),
         "result_text": list(worker.result_text),
     }
+    result.update(key=worker.key, stage=worker.home, parent_key=worker.parent_key)
+    return result
 
 
 # normalized execution identity, additive to the v2 worker element (None-free strings/bools)
@@ -21352,8 +22224,19 @@ def _milestones(snap: Snapshot) -> list[dict]:
 
 
 def _groups(snap: Snapshot) -> list[dict]:
-    return [
-        {
+    by_name: dict[str, list[Worker]] = {}
+    for worker in snap.workers:
+        by_name.setdefault(worker.name, []).append(worker)
+    out = []
+    for group in snap.groups:
+        worker_keys = list(group.worker_keys)
+        members = []
+        if not worker_keys:
+            members = [by_name[name][0] for name in group.workers if len(by_name.get(name, [])) == 1]
+            if len(members) == len(group.workers):
+                worker_keys = [worker.key for worker in members]
+        stage_name = group.stage or (os.path.basename(os.path.normpath(members[0].home)) if members and members[0].home else "")
+        item = {
             "label": group.label,
             "workers": list(group.workers),
             "started": group.started,
@@ -21363,8 +22246,10 @@ def _groups(snap: Snapshot) -> list[dict]:
             "finished": group.finished,
             "current": group.current,
         }
-        for group in snap.groups
-    ]
+        if group.worker_keys or group.stage or any(worker.home for worker in members):
+            item.update(worker_keys=worker_keys, stage=stage_name)
+        out.append(item)
+    return out
 
 
 def _stage_dict(
@@ -21484,7 +22369,7 @@ def _summary_stage(stage: Stage, now: float) -> dict:
         tokens = worker["tokens"]
         total = tokens["ctx"] if tokens["ctx"] is not None else (
             None if any(tokens[k] is None for k in ("in", "out", "cache")) else sum(tokens[k] for k in ("in", "out", "cache")))
-        rows.append({key: worker[key] for key in ("name", "state", "model", "family", "harness", "job", "is_review", "has_report", "start", "end", "quiet_s", "errors", "cost", "goal", "tool_bins", "ctx_window", "level_tag", "flags", "failure", *_IDENTITY_KEYS, *_TREE_KEYS)} | {
+        rows.append({key: worker[key] for key in ("name", "state", "model", "family", "harness", "job", "is_review", "has_report", "start", "end", "quiet_s", "errors", "cost", "goal", "tool_bins", "ctx_window", "level_tag", "flags", "failure", "key", "stage", "parent_key", *_IDENTITY_KEYS, *_TREE_KEYS)} | {
             "title": (worker["title"] or "")[:120], "tokens_total": total,
         })
     full["workers"] = rows
@@ -22165,7 +23050,7 @@ def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -
         return ""
     if ui.gpage in ("openclaw", "wk"):   # the ops pages: Esc goes back to the tree; the page's module takes the rest
         stage = next((s for s in gs.stages if s.path == ui.gstage), None)
-        wk = next((x for x in stage.snap.workers if x.name == ui.gworker), None) if stage is not None else None
+        wk = next((x for x in stage.snap.workers if x.key == ui.gworker), None) if stage is not None else None
         if key in ("esc", "left", "backspace") or stage is None or (ui.gpage == "wk" and wk is None):
             back = ui.gpage == "wk" and stage is not None and wk is not None and ui.gsess   # back to the session page
             ui.gpage, ui.gturn, ui.gworker, ui.scroll, ui.gsess = ("sess" if back else ""), "", "", 0, False
@@ -22292,7 +23177,7 @@ def _ap_global_key_inner(ui: UIState, key: str, gs: GlobalSnapshot, rows: int) -
     elif key in ("o", "space") and kind == "stage":   # double click or o on a session: its overview page
         ui.gpage, ui.gstage, ui.gworker, ui.scroll, ui.sel, ui.gsess = "sess", path, "", 0, 0, False
         stage = next((s for s in gs.stages if s.path == path), None)
-        ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+        ui.expanded = {wk.key for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
         ui.pinned.clear()
     elif key in ("o", "space") and kind != "more":
         _ap_open_station(ui, gs, path, name if kind == "worker" else "")
@@ -22306,10 +23191,10 @@ def _ap_open_station(ui: UIState, gs: GlobalSnapshot, path: str, worker: str = "
     ui.view, ui.tab, ui.follow = "overview", "live", True
     ui.pscroll.clear()
     stage = next((s for s in gs.stages if s.path == path), None)
-    ui.expanded = {wk.name for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
+    ui.expanded = {wk.key for wk in stage.snap.workers if wk.state in LIVE_STATES} if stage else set()
     ui.pinned = set()   # opening a station: its live workers open, nothing is pinned yet
     if stage is not None and worker:
-        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.name == worker), 0)
+        ui.sel = next((i for i, wk in enumerate(stage.snap.workers) if wk.key == worker), 0)
 
 
 def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[str, str, str]]) -> None:
@@ -22329,12 +23214,12 @@ def _ap_open_station_from_row(ui: UIState, gs: GlobalSnapshot, tree: list[tuple[
 def _ap_wk_action(ui: UIState, gs: GlobalSnapshot, stage: Stage, wk: Worker, action: str) -> str:
     """What the worker page asked for: Files, or the station page on that worker with its brief or report tab."""
     if action == "files":
-        return _ap_open_files(ui, gs, stage.path, wk.name)
+        return _ap_open_files(ui, gs, stage.path, wk.key)
     if action in ("brief", "report"):
-        names = [x.name for x in stage.snap.workers]
+        names = [x.key for x in stage.snap.workers]
         ui.gpage, ui.gstage, ui.gworker, ui.scroll, ui.detail_text = "stage", stage.path, "", 0, []
         ui.view, ui.tab, ui.follow = "detail", action, True
-        ui.sel = names.index(wk.name) if wk.name in names else 0
+        ui.sel = names.index(wk.key) if wk.key in names else 0
         ui.panel = ""
         ui.pscroll.clear()
         return "load_detail"
@@ -22346,7 +23231,7 @@ def _ap_open_files(ui: UIState, gs: GlobalSnapshot, path: str, name: str) -> str
     stage = next((s for s in gs.stages if s.path == path), None)
     if stage is None:
         return ""
-    names = [wk.name for wk in stage.snap.workers]
+    names = [wk.key for wk in stage.snap.workers]
     ui.gpage, ui.gstage, ui.view, ui.scroll, ui.detail_text = "stage", path, "files", 0, []
     ui.sel = names.index(name) if name in names else 0
     ui.panel = ""
@@ -22541,9 +23426,9 @@ def _ap_global_validate_page(ui: UIState, gs: GlobalSnapshot, worker_name: str =
     stage = next((item for item in gs.stages if item.path == ui.gstage), None)
     valid = stage is not None
     if ui.gpage == "worker" and stage is not None:
-        valid = any(worker.name == worker_name for worker in stage.snap.workers)
+        valid = any(worker.key == worker_name for worker in stage.snap.workers)
     if ui.gpage == "wk" and stage is not None:
-        valid = any(worker.name == ui.gworker for worker in stage.snap.workers)
+        valid = any(worker.key == ui.gworker for worker in stage.snap.workers)
     if ui.gpage == "sess" and stage is not None:
         valid = True
     if not valid:
@@ -22673,13 +23558,14 @@ def _ap_page_key(ui: UIState, key: str, rows: int) -> str:
 def _ap_load_page(ui: UIState, stage_dir: str, stage: Stage | None, snap: Snapshot | None, now: float) -> None:
     """Read what the open page shows: once on open and on r, never per frame. The cost page is drawn from the snapshot."""
     if ui.demo:   # the tutorial's rows have no lead.json, stream file or git to read
-        name = _ap_sel_name(ui, snap) if ui.view == "files" else ""
+        worker = snap.workers[ui.sel] if snap is not None and not _rd_panel_sel(snap, ui) and 0 <= ui.sel < len(snap.workers) else None
+        name = worker.name if ui.view == "files" and worker else ""
         ui.detail_text = demo_page_lines(ui.view, name)
     elif ui.view == "lead":
         ui.detail_text = lead_page(stage_dir, stage, now)
     elif ui.view == "files":
-        name = _ap_sel_name(ui, snap)
-        worker = next((wk for wk in snap.workers if wk.name == name), None) if snap is not None else None
+        key = _ap_sel_name(ui, snap)
+        worker = next((wk for wk in snap.workers if wk.key == key), None) if snap is not None else None
         ui.detail_text = files_page(stage_dir, worker)
 
 
@@ -22878,27 +23764,27 @@ def _ap_go(ui: UIState, stop: str) -> None:
 
 def _ap_toggle_expanded(ui: UIState, wk: Worker) -> None:
     """Enter on a worker: open or close its card or summary. Opening a finished worker is your own choice, so pin it."""
-    if wk.name in ui.expanded:
-        ui.expanded.discard(wk.name)
-        ui.pinned.discard(wk.name)
+    if wk.key in ui.expanded:
+        ui.expanded.discard(wk.key)
+        ui.pinned.discard(wk.key)
     else:
-        ui.expanded.add(wk.name)
+        ui.expanded.add(wk.key)
         if wk.state not in LIVE_STATES:
-            ui.pinned.add(wk.name)
+            ui.pinned.add(wk.key)
 
 
 def _ap_sync_expanded(ui: UIState, prev: Snapshot | None, snap: Snapshot) -> None:
     """Keep the open set in step with the workers. A worker that starts opens; one that finishes closes unless the user pinned it."""
-    before = {w.name: w.state for w in prev.workers} if prev is not None else {}
+    before = {w.key: w.state for w in prev.workers} if prev is not None else {}
     for wk in snap.workers:
-        was = before.get(wk.name)
+        was = before.get(wk.key)
         if wk.state in LIVE_STATES:
             if was not in LIVE_STATES:
-                ui.expanded.add(wk.name)
-                ui.pinned.discard(wk.name)
-        elif was in LIVE_STATES and wk.name not in ui.pinned:
-            ui.expanded.discard(wk.name)
-    names = {w.name for w in snap.workers}
+                ui.expanded.add(wk.key)
+                ui.pinned.discard(wk.key)
+        elif was in LIVE_STATES and wk.key not in ui.pinned:
+            ui.expanded.discard(wk.key)
+    names = {w.key for w in snap.workers}
     ui.expanded &= names
     ui.pinned &= names
     ui.group_open &= {group.key for group in snap.groups} | {"*"}
@@ -23044,10 +23930,10 @@ def _ap_pointer_keys(ui: UIState, key: str, gs: GlobalSnapshot | None, snap: Sna
         if station is None:
             return []
         if action == "select":
-            names = [wk.name for wk in station.workers]
-            if target not in names:
+            keys = [wk.key for wk in station.workers]
+            if target not in keys:
                 return []
-            stop = _rd_wstop(names.index(target))
+            stop = _rd_wstop(keys.index(target))
         else:
             stop = _RD_GROUP + target
         stops = _rd_stops(station, ui)
@@ -23129,26 +24015,26 @@ def _ap_follow_selection(ui: UIState, name: str, snap: Snapshot) -> str:
         ui.sel = 0
         return ""
     for i, w in enumerate(workers):
-        if w.name == name:
+        if w.key == name:
             ui.sel = i
             return name
     ui.sel = min(max(ui.sel, 0), len(workers) - 1)
-    return workers[ui.sel].name
+    return workers[ui.sel].key
 
 
 def _ap_sel_name(ui: UIState, snap: Snapshot | None) -> str:
     """Name of the worker under the cursor; "" on a panel row or when no worker is there."""
     if snap is None or _rd_panel_sel(snap, ui) or not 0 <= ui.sel < len(snap.workers):
         return ""
-    return snap.workers[ui.sel].name
+    return snap.workers[ui.sel].key
 
 
 def _ap_started(prev: Snapshot | None, new: Snapshot) -> bool:
     """True when a live worker shows up that the previous snapshot did not have."""
     if prev is None:
         return False
-    seen = {w.name for w in prev.workers}
-    return any(w.state in LIVE_STATES and w.name not in seen for w in new.workers)
+    seen = {w.key for w in prev.workers}
+    return any(w.state in LIVE_STATES and w.key not in seen for w in new.workers)
 
 
 def _ap_follow_snapshot(ui: UIState, snap: Snapshot, sel_name: str, started: bool) -> str:
@@ -23186,29 +24072,29 @@ def _ap_detect_events(prev: Snapshot | None, new: Snapshot) -> list[_ap_Event]:
     if prev is None:
         return []
     events: list[_ap_Event] = []
-    old = {w.name: w for w in prev.workers}
+    old = {w.key: w for w in prev.workers}
     for w in new.workers:
-        before = old.get(w.name)
+        before = old.get(w.key)
         if before is None or before.state not in LIVE_STATES:
             continue
         text = w.title or (w.summary[0] if w.summary else "")
         if w.state == DONE:
-            events.append(_ap_Event("done", w.name, f"✔ {w.name} finished", text, "normal"))
+            events.append(_ap_Event("done", w.key, f"✔ {w.name} finished", text, "normal"))
         elif w.state == FAILED:
-            events.append(_ap_Event("failed", w.name, f"✖ {w.name} failed", text, "critical"))
+            events.append(_ap_Event("failed", w.key, f"✖ {w.name} failed", text, "critical"))
         elif w.state == NOREPORT:
             summary = f"· {w.name} finished without a report"
-            events.append(_ap_Event("noreport", w.name, summary, text, "low"))
+            events.append(_ap_Event("noreport", w.key, summary, text, "low"))
         elif w.state in LIVE_STATES and w.start > 0 and (eta := _ap_eta(new, w)) is not None:
             if prev.now - w.start < eta <= new.now - w.start:
                 body = f"expected about {int(eta // 60)}m {int(eta % 60):02d}s, still running"
-                events.append(_ap_Event("overdue", w.name, f"⏰ {w.name} is past its estimated time", body, "normal"))
+                events.append(_ap_Event("overdue", w.key, f"⏰ {w.name} is past its estimated time", body, "normal"))
             if w.state == STALLED and before.state != STALLED:
                 body = f"no output for {int(w.quiet_s // 60)} min"
-                events.append(_ap_Event("stalled", w.name, f"▲ {w.name} stalled", body, "critical"))
+                events.append(_ap_Event("stalled", w.key, f"▲ {w.name} stalled", body, "critical"))
         elif w.state == STALLED and before.state != STALLED:
             body = f"no output for {int(w.quiet_s // 60)} min"
-            events.append(_ap_Event("stalled", w.name, f"▲ {w.name} stalled", body, "critical"))
+            events.append(_ap_Event("stalled", w.key, f"▲ {w.name} stalled", body, "critical"))
     before_p1 = {r.name: sum(1 for f in r.findings if f.prio == 1) for r in prev.reviews}
     for r in new.reviews:
         p1 = [f for f in r.findings if f.prio == 1]
@@ -23527,7 +24413,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                         prev_global = gs
                         if ui.gpage == "worker" and stage_data is not None:
                             ui.sel = next((i for i, worker in enumerate(stage_data.snap.workers)
-                                           if worker.name == global_worker_name), 0)
+                                           if worker.key == global_worker_name), 0)
                             if ui.view == "detail" and ui.tab != "live":
                                 _ap_load_global_detail(ui, collector, ui.gstage, global_worker_name)
                         elif ui.gpage == "stage" and stage_data is not None:
@@ -23571,7 +24457,7 @@ def _ap_interactive(collector: Collector | GlobalCollector, stage: str, fps: int
                 elif stage_snap is not None and ui.gpage in ("worker", "stage"):
                     if ui.gpage == "worker" and ui.view == "detail":
                         ui.sel = next((i for i, worker in enumerate(stage_snap.workers)
-                                       if worker.name == global_worker_name), 0)
+                                       if worker.key == global_worker_name), 0)
                     lines = render_frame(stage_snap, ui, cols, rows, now, _ap_global_stage(gs, ui))
                 else:
                     lines = render_global(gs, ui, cols, rows, now)

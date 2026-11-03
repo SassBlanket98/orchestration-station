@@ -168,10 +168,10 @@ class HarnessTest(unittest.TestCase):
         stages = [
             Stage(path="/a", label="a", tag="CC·W", session_id="s1", native_id="s1"),
             Stage(path="/b", label="b", tag="CC·P", native_id="s2"),
-            Stage(path="/c", label="c", tag="CDX", native_id="abc"),
+            Stage(path="/c", label="c", tag="Codex", native_id="abc"),
             Stage(path="/d", label="d", tag="OCode", session_id="ses_1"),
             Stage(path="/e", label="e", tag="OClaw"),
-            Stage(path="/f", label="f", tag="CUR"),
+            Stage(path="/f", label="f", tag="Cursr"),
             Stage(path="/g", label="g", tag="T3"),
         ]
         collect._co_cc_fill_harness(stages)
@@ -183,7 +183,7 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(stages[3].resume_cmd, "")
 
     def test_an_existing_harness_is_not_overwritten(self) -> None:
-        stage = Stage(path="/a", label="a", tag="CDX", harness="codex", resume_cmd="codex resume keep")
+        stage = Stage(path="/a", label="a", tag="Codex", harness="codex", resume_cmd="codex resume keep")
         collect._co_cc_fill_harness([stage])
         self.assertEqual((stage.harness, stage.resume_cmd), ("codex", "codex resume keep"))
 
@@ -279,6 +279,7 @@ class UnlinkedGroupTest(unittest.TestCase):
         for i in range(300):
             os.makedirs(os.path.join(stage, f"w{i:03d}"), exist_ok=True)
             write(os.path.join(stage, f"w{i:03d}.pid"), str(1000 + i), NOW - 30 - i)
+            write(os.path.join(stage, f"w{i:03d}.model"), "test-model", NOW - 30 - i)
             write(os.path.join(stage, f"w{i:03d}.log"), "", NOW - 30 - i)
         with mock.patch.object(collect, "_co_orphan_leads", return_value={}), \
                 mock.patch.object(collect, "_co_pid_live",
@@ -302,6 +303,7 @@ class UnlinkedGroupTest(unittest.TestCase):
         for i in range(3):
             os.makedirs(os.path.join(stage, f"w{i}"), exist_ok=True)
             write(os.path.join(stage, f"w{i}.pid"), str(DEAD_PID), NOW - 30 - i)
+            write(os.path.join(stage, f"w{i}.model"), "test-model", NOW - 30 - i)
             write(os.path.join(stage, f"w{i}.log"), "", NOW - 30 - i)
         with mock.patch.object(collect, "_co_orphan_leads", return_value={}):
             g = collect.GlobalCollector([root], ledger=os.path.join(root, "none.jsonl"), quota=False)

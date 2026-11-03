@@ -193,7 +193,7 @@ _tu_STEPS: tuple[TutStep, ...] = (
              "Middle: one block per project. Each session is a row; a session that started helpers (workers) lists them underneath.",
              "Bottom: a strip of usage, events, logs and metrics, then the key line. The key line changes with where you are.")),
     TutStep("Reading a row",
-            ("LEAD is the session you talk to. WORKER is a helper it started. HARN is the tool (CC·P Claude personal, CDX Codex, OCode, Cursr).",
+            ("LEAD is the session you talk to. WORKER is a helper it started. HARN is the tool (CC·P Claude personal, Codex, OCode, Cursr).",
              "The mark in front of a worker is its state: a spinner is running, ○ quiet for a while, ✖ failed, ✔ finished.",
              "CTX and TOKENS say how full the context is and what it has used; COST is money spent; TOOLS counts tool calls.")),
     TutStep("Move the cursor",

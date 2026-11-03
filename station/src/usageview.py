@@ -40,6 +40,7 @@ from widgets import (
     _wd_width,
 )
 
+_UV_HIDDEN = frozenset({"local"})   # the local model has no quota: its bar never leaves 0
 _UV_ON_PACE = 5.0          # points either side of pace that still read as "on pace"
 _UV_WIN_SECS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400, "thirty_day": 30 * 86400}
 
@@ -175,6 +176,8 @@ def _uv_groups(accounts: list[QuotaAccount], spend_shown: set[str]) -> tuple[lis
     quiet: list[str] = []
     seen: set[str] = set()
     for a in accounts:
+        if a.name in _UV_HIDDEN:
+            continue
         if a.credit is not None:
             if a.name in spend_shown:
                 continue    # a spend block below carries it

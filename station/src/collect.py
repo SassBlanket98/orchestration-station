@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 from codexread import CodexSession, read_codex_session
 from gitstate import attach_work
+from labels import HARNESS_LABELS, harness_for_label, harness_label
 from logparse import LogState, activity, parse_log, prune_tool_ring
 from model import (
     ACTIVE_S,
@@ -146,15 +147,7 @@ def _co_agent_label() -> str:
     return "Bot" if OPENCLAW_AGENT.casefold() == "openclaw" else OPENCLAW_AGENT[:1].upper() + OPENCLAW_AGENT[1:]
 
 
-_co_execution_tags = {
-    ("claude", "personal"): "CC·P",
-    ("claude", "work"): "CC·W",
-    ("codex", "personal"): "CDX",
-    ("t3", "personal"): "T3",
-    ("opencode", "personal"): "OCode",
-    ("openclaw", "openclaw"): _co_agent_label(),
-    ("cursor", "personal"): "CUR",
-}
+_co_execution_tags = HARNESS_LABELS
 _co_child_live_s = 900             # an OpenCode subagent session updated this recently and not idle is running, seconds
 _co_child_max = 40                 # most subagent sessions listed under one OpenCode session
 _co_terminal_peer_s = 300          # in a folder with a terminal OpenCode, other sessions show only when this fresh, seconds
@@ -178,8 +171,10 @@ _co_cc_injected_goal = "# AGENTS.md instructions"
 _co_cc_injected_names = ("# AGENTS.md instructions", "<environment_context>", "<user_instructions>",
                          "<permissions instructions>")
 _co_cc_uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-_co_cc_tag_harness = {"CC·W": "claude", "CC·P": "claude", "CDX": "codex",
-                      "OCode": "opencode", "OClaw": "openclaw", _co_agent_label(): "openclaw", "CUR": "cursor"}
+_co_cc_tag_harness = {label: harness_for_label(label) for (harness, _), label in HARNESS_LABELS.items()
+                      if harness != "t3"}
+_co_cc_tag_harness.update({"CDX": "codex", "CUR": "cursor"})
+_co_cc_tag_harness[_co_agent_label()] = "openclaw"
 _co_cc_codex_cache: dict[str, tuple[float, CodexSession | None]] = {}
 
 
@@ -340,7 +335,8 @@ def _co_is_launcher_name(name: str, cwd: str) -> bool:
     return bool(name) and bool(base) and re.fullmatch(rf"{re.escape(base)}(-[a-z0-9]{{1,4}})?", name.lower()) is not None
 
 
-def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "") -> dict[str, object]:
+def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "",
+                     procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> dict[str, object]:
     """Best effort, read-only metadata for the selected interactive lead."""
     result: dict[str, object] = {"session_id": "", "session_name": "", "tag": "", "lead_model": "", "effort": "", "activity": 0.0}
     result.update(parent="", root_session="", launch_depth=0, app=False, app_id="", tmux="")
@@ -365,9 +361,17 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
         result["launch_depth"] = max(0, int(env.get("STATUS_DEPTH", "0")))
     except ValueError:
         pass
+    if not any(env.get(key) for key in ("STATUS_PARENT_SESSION", "STATUS_ROOT_SESSION", "STATUS_DEPTH")):
+        own_session = child_session or _co_env_session(env)
+        if own_session:
+            parent, root, depth = _co_ancestor_lineage(pid, own_session, procs)
+        else:
+            parent, root, depth = "", "", 0
+        result["parent"], result["root_session"], result["launch_depth"] = parent, root, depth
     if kind.startswith("claude"):
         config = env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-        result["tag"] = "CC·W" if "work" in os.path.basename(config).lower() else "CC·P"
+        account = "work" if "work" in os.path.basename(config).lower() else "personal"
+        result["tag"] = harness_label("claude", account)
         try:
             info = _co_claude_sidecar(config, pid, child_session)
             bridge = info.get("bridgeSessionId", "")
@@ -440,7 +444,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
             result["session_id"] = child_session
     elif kind in ("codex", "t3 code"):
         # T3 Code drives Codex underneath: its rollout is the same file, so it reads the same activity
-        result["tag"] = "T3" if kind == "t3 code" else "CDX"
+        result["tag"] = _co_execution_tags.get(("t3" if kind == "t3 code" else kind, "personal"), "")
         try:
             codex_home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
             index_path = os.path.join(codex_home, "session_index.jsonl")
@@ -524,7 +528,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
     elif kind == "t3 code":
         result["tag"] = "T3"   # T3 drives Codex underneath; it is its own harness, not a Codex session
     elif kind == "opencode":
-        result["tag"] = "OCode"
+        result["tag"] = harness_label(kind)
         try:
             db = os.path.join(os.path.expanduser("~"), ".local/share/opencode/opencode.db")
             conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
@@ -558,7 +562,7 @@ def _co_lead_session(stage: str, lead: _co_Lead | None, child_session: str = "")
         except (OSError, sqlite3.Error, ValueError, TypeError):
             pass
     elif kind == "cursor":
-        result["tag"] = "CUR"
+        result["tag"] = _co_execution_tags.get((kind, "personal"), "")
     harness_title = result.pop("harness_title", "")
     result["session_name"] = _co_short_name(str(explicit_name or harness_title))
     return result
@@ -920,11 +924,7 @@ def _co_is_service(
     """
     if pid is None or pid not in procs:
         return False
-    if _co_brief_path(stage, name) is not None:
-        return False
-    if _co_stat(os.path.join(stage, name + ".model")) is not None:
-        return False
-    if os.path.isdir(os.path.join(stage, name)):
+    if _co_is_worker(stage, name) or os.path.isdir(os.path.join(stage, name)):
         return False
     return not _co_proc_is_agent(pid, children)
 
@@ -959,13 +959,46 @@ def _co_cwd(pid: int) -> str:
 
 
 _co_environ_keys = ("CLAUDE_CONFIG_DIR", "CODEX_MANAGED_BY_NPM", "CODEX_HOME", "OPENCODE_SESSION_ID",
-                    "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "STATUS_PARENT_SESSION", "STATUS_PARENT_HARNESS",
+                    "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_PID", "STATUS_PARENT_SESSION", "STATUS_PARENT_HARNESS",
                     "STATUS_ROOT_SESSION", "STATUS_DEPTH")
 
 
 def _co_environ(pid: int) -> dict[str, str]:
     """The variables in ``_co_environ_keys`` from the process provider. The rest is never kept: it holds secrets."""
     return _pr_environ(pid, _co_environ_keys)
+
+
+def _co_env_session(env: dict[str, str]) -> str:
+    for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "OPENCODE_SESSION_ID"):
+        value = env.get(key, "")
+        if value:
+            return value
+    return ""
+
+
+def _co_ancestor_lineage(pid: int, own_session: str,
+                         procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> tuple[str, str, int]:
+    """Read lineage from the nearest different-session ancestor, bounded to 16 process links."""
+    if not own_session:
+        return "", "", 0
+    procs = _pr_scan() if procs is None else procs
+    seen = {pid}
+    current = procs.get(pid, (0, 0, 0, 0, 0))[0]
+    for _ in range(16):
+        if current <= 1 or current in seen or current not in procs:
+            break
+        seen.add(current)
+        env = _co_environ(current)
+        session = _co_env_session(env)
+        if session and session != own_session:
+            root = env.get("STATUS_ROOT_SESSION", "") or session
+            try:
+                depth = max(0, int(env.get("STATUS_DEPTH", "0"))) + 1
+            except (TypeError, ValueError):
+                depth = 1
+            return session, root, depth
+        current = procs[current][0]
+    return "", "", 0
 
 
 _co_ctx_cache: dict[str, tuple[float, int, int, int, int | None]] = {}   # transcript -> mtime, size, inode, ctime, window
@@ -1575,15 +1608,26 @@ def _co_service_leads(procs: dict[int, tuple[int, int, int, int, int]], argv_of:
     return leads
 
 
+def _co_is_worker(stage: str, name: str) -> bool:
+    """A PID belongs to a worker only when the stage also records worker metadata or a brief."""
+    for suffix in (".model", ".session", ".run.json"):
+        try:
+            if os.path.isfile(os.path.join(stage, name + suffix)):
+                return True
+        except OSError:
+            continue
+    return _co_brief_path(stage, name) is not None
+
+
 def _co_stage_pid_names(stage: str) -> dict[int, str]:
-    """pid -> worker name for every ``<name>.pid`` file in ``stage``."""
+    """pid -> worker name for valid worker records in ``stage``."""
     out: dict[int, str] = {}
     try:
         names = os.listdir(stage)
     except OSError:
         return out
     for filename in names:
-        if filename.endswith(".pid"):
+        if filename.endswith(".pid") and _co_is_worker(stage, filename[:-4]):
             pid = _co_digits(os.path.join(stage, filename))
             if pid:
                 out[pid] = filename[:-4]
@@ -2034,14 +2078,31 @@ def _co_group_of(members: list[Worker]) -> Group:
         done=done,
         total=len(members),
         live=sum(wk.state in LIVE_STATES for wk in members),
+        worker_keys=[wk.key for wk in members],
+        stage=os.path.basename(os.path.normpath(members[0].home)) if members[0].home else "",
         finished=finished,
         finished_at=max(ends) if finished and ends else None,
     )
 
 
 def _co_groups(workers: list[Worker], milestones: list[Milestone]) -> list[Group]:
-    """Workers grouped by the PROGRESS.md dispatch line that launched them (nearest start wins when a name was
-    launched twice); the rest, in 60 s windows of their starts. Newest group first; the current one is flagged."""
+    """Group workers within each origin stage, preserving dispatch and 60 s grouping inside each stage."""
+    origins: dict[str, list[Worker]] = {}
+    nonempty_origins = {worker.home for worker in workers if worker.home}
+    sole_origin = next(iter(nonempty_origins)) if len(nonempty_origins) == 1 else None
+    for worker in workers:
+        origin = worker.home or sole_origin or ""
+        origins.setdefault(origin, []).append(worker)
+    groups = [group for members in origins.values() for group in _co_groups_in_origin(members, milestones)]
+    active = [group for group in groups if group.live]
+    current = active or sorted(groups, key=lambda group: group.started, reverse=True)[:1]
+    for group in current:
+        group.current = True
+    return sorted(groups, key=lambda group: group.started, reverse=True)
+
+
+def _co_groups_in_origin(workers: list[Worker], milestones: list[Milestone]) -> list[Group]:
+    """Group one origin by the closest matching dispatch line, then 60 s windows."""
     dispatches: list[tuple[float, list[str]]] = []
     for stone in milestones:
         match = _co_dispatch_re.match(stone.text) if stone.ts is not None else None
@@ -2066,10 +2127,6 @@ def _co_groups(workers: list[Worker], milestones: list[Milestone]) -> list[Group
             windows.append([wk])
     clusters = list(buckets.values()) + windows
     groups = sorted((_co_group_of(members) for members in clusters), key=lambda g: g.started, reverse=True)
-    if groups:
-        active = [g for g in groups if g.live]
-        for group in active or groups[:1]:
-            group.current = True
     return groups
 
 
@@ -2314,7 +2371,7 @@ def _co_execution_worker(item: ExecutionEvidence, now: float, live: bool) -> Wor
     brief_text = item.brief.splitlines()
     result_text = item.result.splitlines()
     # The record's own counters ride on the worker's log, like every other harness's.
-    log = LogState()
+    log = LogState(harness=rec.harness)
     _co_metrics_fill(log, {"tokens_in": rec.tokens_in, "tokens_out": rec.tokens_out,
                            "tokens_cache": rec.tokens_cache, "cost": rec.cost,
                            "ctx_tokens": rec.context_tokens}, "record")
@@ -2325,7 +2382,7 @@ def _co_execution_worker(item: ExecutionEvidence, now: float, live: bool) -> Wor
         execution_id=rec.execution_id, account=rec.account, native_id=rec.native_id,
         parent_id=rec.parent_id, root_id=rec.root_id, linkage=rec.linkage, outcome=rec.outcome,
         brief_text=brief_text, result_text=result_text, purpose_source=rec.purpose_source,
-        output_available=rec.output_available or bool(item.result), log=log,
+        output_available=rec.output_available or bool(item.result), harness=rec.harness, log=log,
     )
 
 
@@ -3523,6 +3580,7 @@ class Collector:
             effort=effort,
             session=lineage[0], parent_session=lineage[1], root_session=lineage[2], depth=lineage[3],
             ancestors=lineage[4], launched=lineage[5],
+            home=os.path.abspath(stage),
         )
 
     def _co_discovered(
@@ -3635,6 +3693,8 @@ class Collector:
             pid = _co_digits(path)
             if _co_guard(_co_is_service, stage, name, pid, procs, children) is True:
                 services.append((name, True))
+                continue
+            if not _co_is_worker(stage, name):
                 continue
             worker = _co_guard(self._co_one_worker, stage, name, path, pid, now, procs, children)
             if isinstance(worker, Worker):
@@ -4111,8 +4171,12 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
         workers = stage.snap.workers
         if stage.execution_id or len(workers) < 2:
             continue
-        by_exec = {wk.execution_id: wk for wk in workers if wk.execution_id}
-        by_native = {wk.native_id: wk for wk in workers if wk.native_id}
+        exec_counts = {wk.execution_id: sum(item.execution_id == wk.execution_id for item in workers)
+                       for wk in workers if wk.execution_id}
+        native_counts = {wk.native_id: sum(item.native_id == wk.native_id for item in workers)
+                         for wk in workers if wk.native_id}
+        by_exec = {wk.execution_id: wk for wk in workers if wk.execution_id and exec_counts[wk.execution_id] == 1}
+        by_native = {wk.native_id: wk for wk in workers if wk.native_id and native_counts[wk.native_id] == 1}
         by_pid = {wk.pid: wk for wk in workers if wk.pid}
         parent_of: dict[str, str] = {}
         for wk in workers:
@@ -4134,46 +4198,65 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
                         break
                     pid = procs[pid][0]
             if found is not None and found is not wk:
-                parent_of[wk.name] = found.name
+                wk.parent = found.name
+                wk.parent_key = found.key
+                parent_of[wk.key] = found.key
         if not parent_of:
             continue
-        by_name = {wk.name: wk for wk in workers}
-        merged_children: set[str] = set()
-        for child_name, parent_name in list(parent_of.items()):
-            parent, child = by_name.get(parent_name), by_name.get(child_name)
+        by_key = {wk.key: wk for wk in workers}
+        merged_children: set[int] = set()
+        rekeyed: dict[str, str] = {}   # folding a native id into a worker can change its key
+        for child_key, parent_key in list(parent_of.items()):
+            parent, child = by_key.get(parent_key), by_key.get(child_key)
             if _co_is_own_native_row(parent, child) and not any(
-                    other_parent == parent_name and other in merged_children for other, other_parent in parent_of.items()):
+                    other_parent == parent_key and id(by_key.get(other)) in merged_children for other, other_parent in parent_of.items()):
                 # A dispatch worker's own native session, still running (its run record has no native id yet): one worker, not two.
+                old_key = parent.key
                 for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
                                    "brief_text", "result_text", "purpose_source", "output_available"):
                     _co_fill_identity(parent, child, field_name)
                 if child.model and parent.state in LIVE_STATES:
                     parent.model = child.model   # the session's own model name is more exact than the brief's alias
-                merged_children.add(child_name)
+                merged_children.add(id(child))
+                if parent.key != old_key:
+                    rekeyed[old_key] = parent.key
         if merged_children:
-            for name, parent_name in list(parent_of.items()):
-                if parent_name in merged_children:
-                    parent_of[name] = parent_of[parent_name]
-            for name in merged_children:
-                del parent_of[name]
-            workers = [wk for wk in workers if wk.name not in merged_children]
+            for key, parent_key in list(parent_of.items()):
+                if id(by_key.get(parent_key)) in merged_children:
+                    parent_of[key] = parent_of[parent_key]
+            for merged_id in merged_children:
+                child_key = next((key for key, item in by_key.items() if id(item) == merged_id), None)
+                if child_key is not None:
+                    parent_of.pop(child_key, None)
+            workers = [wk for wk in workers if id(wk) not in merged_children]
             stage.snap.workers = workers
+            if rekeyed:
+                parent_of = {rekeyed.get(key, key): rekeyed.get(parent_key, parent_key)
+                             for key, parent_key in parent_of.items()}
             if not parent_of:
                 continue
         for wk in workers:   # a loop of parents is cut at the worker that closes it
-            chain, cur = {wk.name}, parent_of.get(wk.name, "")
+            chain, cur = {wk.key}, parent_of.get(wk.key, "")
             while cur and cur not in chain:
                 chain.add(cur)
                 cur = parent_of.get(cur, "")
-            wk.parent = parent_of.get(wk.name, "") if not cur else ""
-        names = {wk.name: wk for wk in workers}
+            wk.parent_key = parent_of.get(wk.key, "") if not cur else ""
+            parent = next((item for item in workers if item.key == wk.parent_key), None)
+            wk.parent = parent.name if parent else ""
+        names = {wk.key: wk for wk in workers}
         for wk in workers:
-            level, cur = 0, wk.parent
+            level, cur = 0, wk.parent_key
             while cur and level < 32:
                 level += 1
-                cur = names[cur].parent if cur in names else ""
+                cur = names[cur].parent_key if cur in names else ""
             wk.level = level
         stage.snap.workers = nest_workers(workers)
+
+
+def _co_same_worker(a_key: str, a_home: str, a_pid: int | None,
+                    b_key: str, b_home: str, b_pid: int | None) -> bool:
+    """Home-less workers share an identity only when their pids also match."""
+    return a_key == b_key and (bool(a_home or b_home) or a_pid == b_pid)
 
 
 def _co_adopt_by_session(stages: list[Stage]) -> list[Stage]:
@@ -4194,10 +4277,14 @@ def _co_adopt_by_session(stages: list[Stage]) -> list[Stage]:
         kept: list[Worker] = []
         for wk in stage.snap.workers:
             lead = leads.get(wk.session) if wk.session else None
-            if lead is None or lead is stage or any(o.name == wk.name and o.pid == wk.pid for o in lead.snap.workers):
+            if lead is None or lead is stage or any(
+                    _co_same_worker(o.key, o.home, o.pid, wk.key, wk.home, wk.pid) or (
+                        o.pid not in (None, 0) and wk.pid not in (None, 0) and o.pid == wk.pid
+                        and (o.key == wk.key or not o.home or not wk.home)
+                    ) for o in lead.snap.workers):
                 kept.append(wk)
                 continue
-            wk.home = wk.home or stage.dir or stage.path
+            wk.home = wk.home or os.path.abspath(stage.dir or stage.path)
             lead.snap.workers.append(wk)
             adopted.setdefault(wk.session, []).append(wk)
         if len(kept) != len(stage.snap.workers):
@@ -4252,6 +4339,153 @@ def _co_run_record_workers(stages: list[Stage]) -> dict[str, tuple[Stage, str]]:
                 if native_id not in found:
                     found[native_id] = (station, str(data.get("name") or ""))
     return found
+
+
+def _co_codex_run_record_workers(stages: list[Stage]) -> list[tuple[Stage, Worker, dict]]:
+    """Codex dispatch records paired with the named worker in their station row."""
+    found: list[tuple[Stage, Worker, dict]] = []
+    for station in stages:
+        if not station.dir or not station.snap.workers:
+            continue
+        for directory in _co_run_record_dirs(station.dir):
+            def named_worker(name: str, station: Stage = station,
+                             directory: str = directory) -> Worker | None:
+                matches = [worker for worker in station.snap.workers if worker.name == name]
+                if len(matches) == 1:
+                    return matches[0]
+                origin_matches = [worker for worker in matches if worker.home
+                                  and os.path.realpath(worker.home) == os.path.realpath(directory)]
+                return origin_matches[0] if len(origin_matches) == 1 else None
+
+            for ident, data in _co_load_run_records(directory).items():
+                if data.get("harness") == "codex":
+                    worker = named_worker(str(data.get("name") or ""))
+                    if worker is not None:
+                        found.append((station, worker, {**data, "native_id": ident}))
+            for data in _co_unlinked_run_records(directory):
+                if data.get("harness") == "codex":
+                    worker = named_worker(str(data.get("name") or ""))
+                    if worker is not None:
+                        found.append((station, worker, data))
+    return found
+
+
+def _co_codex_pid_conflicts(native: Worker, target: Worker, workers: list[Worker],
+                            procs: dict[int, tuple[int, int, int, int, int]]) -> bool:
+    """Reject a row only when it is visibly running below a different live stage worker."""
+    if native.pid is None or target.pid is None or native.pid == target.pid:
+        return False
+    return any(other is not target and other.pid is not None and other.state in LIVE_STATES
+               and _co_ancestor_in(native.pid, {other.pid}, procs) for other in workers)
+
+
+def _co_codex_legacy_pairs(stages: list[Stage], procs: dict[int, tuple[int, int, int, int, int]]) -> list[tuple[Stage, Worker, Stage, Worker]]:
+    """Return only mutually unique historical Codex run/native pairs by cwd and close start time."""
+    records = _co_codex_run_record_workers(stages)
+    def execution_cwd(execution: Stage) -> str:
+        # Unattached execution buckets with multiple members have no single record cwd. Their path
+        # retains the bucket cwd: execution:unattached:<cwd>.
+        cwd = execution.cwd
+        if not cwd and execution.path.startswith("execution:unattached:"):
+            cwd = execution.path[len("execution:unattached:"):]
+        return os.path.realpath(os.path.expanduser(cwd)) if cwd else ""
+
+    native_by_cwd: dict[str, list[tuple[Stage, Worker]]] = {}
+    for execution in stages:
+        if not execution.execution_id or not (cwd := execution_cwd(execution)):
+            continue
+        for worker in execution.snap.workers:
+            if worker.harness == "codex" and worker.native_id:
+                native_by_cwd.setdefault(cwd, []).append((execution, worker))
+
+    record_cwds: dict[tuple[int, int], str] = {}
+    for station, target, record in records:
+        if record.get("native_id") or target.native_id:
+            continue
+        if target.harness != "codex" or not target.start:
+            continue
+        record_cwd = str(record.get("cwd") or "")
+        if not record_cwd:
+            continue
+        record_cwd = os.path.realpath(os.path.expanduser(record_cwd))
+        record_cwds[(id(station), id(target))] = record_cwd
+
+    # Time-only uniqueness includes every nearby Codex worker in the station, even one
+    # without a run record. Known per-worker record cwds keep workers from other dirs out.
+    workers_by_station: dict[int, list[Worker]] = {}
+    known_worker_cwds: dict[tuple[int, int], set[str]] = {}
+    for station, target, record in records:
+        cwd = str(record.get("cwd") or "")
+        if not cwd:
+            continue
+        normalized = os.path.realpath(os.path.expanduser(cwd))
+        key = (id(station), id(target))
+        known_worker_cwds.setdefault(key, set()).add(normalized)
+        workers_by_station[id(station)] = station.snap.workers
+
+    time_possible: list[tuple[Stage, Worker, Stage, Worker]] = []
+    pid_related: list[tuple[Stage, Worker, Stage, Worker]] = []
+    for station, target, record in records:
+        record_cwd = record_cwds.get((id(station), id(target)))
+        if not record_cwd:
+            continue
+        if record.get("native_id") or target.native_id or target.harness != "codex" or not target.start:
+            continue
+        station_workers = workers_by_station.get(id(station), station.snap.workers)
+        pool = [worker for worker in station_workers
+                if worker.harness == "codex" and worker.start and not worker.native_id
+                and (not known_worker_cwds.get((id(station), id(worker)))
+                     or record_cwd in known_worker_cwds[(id(station), id(worker))])]
+        for execution, native in native_by_cwd.get(record_cwd, []):
+            owners = [worker for worker in pool if worker.pid is not None
+                      and (native.pid == worker.pid
+                           or (native.pid is not None and _co_ancestor_in(native.pid, {worker.pid}, procs)))]
+            if len(owners) == 1:
+                if owners[0] is target:
+                    pid_related.append((station, target, execution, native))
+                continue
+            if len(owners) > 1:
+                continue
+            for worker in pool:
+                if abs(native.start - worker.start) > _co_dup_window_s:
+                    continue
+                if _co_codex_pid_conflicts(native, worker, station_workers, procs):
+                    continue
+                time_possible.append((station, worker, execution, native))
+
+    # A worker's pid is useful only while that worker is live and only for a native
+    # row that started shortly after it. Multiple pid-related natives make that
+    # evidence ambiguous, so send those pairs through the mutually-unique time rule.
+    pid_related = list({(id(station), id(target), id(execution), id(native)):
+                        (station, target, execution, native)
+                        for station, target, execution, native in pid_related}.values())
+    related_by_target: Counter[int] = Counter(id(target) for _, target, _, _ in pid_related)
+    pid_possible: list[tuple[Stage, Worker, Stage, Worker]] = []
+    for station, target, execution, native in pid_related:
+        pid_is_valid = (
+            related_by_target[id(target)] == 1
+            and target.state in LIVE_STATES
+            and target.pid is not None
+            and target.pid in procs
+            and native.start >= target.start
+            and native.start - target.start <= 120
+        )
+        if pid_is_valid:
+            pid_possible.append((station, target, execution, native))
+        elif abs(native.start - target.start) <= _co_dup_window_s:
+            station_workers = workers_by_station.get(id(station), station.snap.workers)
+            if not _co_codex_pid_conflicts(native, target, station_workers, procs):
+                time_possible.append((station, target, execution, native))
+
+    time_possible = list({(id(station), id(target), id(execution), id(native)): (station, target, execution, native)
+                          for station, target, execution, native in time_possible}.values())
+    by_target: Counter[int] = Counter(id(target) for _, target, _, _ in time_possible)
+    by_native: Counter[int] = Counter(id(native) for _, _, _, native in time_possible)
+    unique_time = [(station, target, execution, native)
+                   for station, target, execution, native in time_possible
+                   if by_target[id(target)] == 1 and by_native[id(native)] == 1
+                   and (id(station), id(target)) in record_cwds]
+    return pid_possible + unique_time
 
 
 _co_unlinked_run_cache: dict[str, tuple[int, list[dict]]] = {}
@@ -4313,8 +4547,208 @@ def _co_link_run_record(execution: Stage, stations: dict[str, Stage]) -> str:
     return next(iter(matches)) if len(matches) == 1 else ""
 
 
-def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
+def _co_apply_manager_lineage(stages: list[Stage]) -> list[Stage]:
+    """Promote known session owners from their workers' schema-2 lineage before native attachment."""
+    by_session: dict[str, Stage] = {}
+    for stage in stages:
+        if stage.session_id:
+            current = by_session.get(stage.session_id)
+            if current is None or (stage.lead_state == "live" and current.lead_state != "live"):
+                by_session[stage.session_id] = stage
+
+    known_sessions = set(by_session)
+    known_sessions.update(worker.native_id for stage in stages for worker in stage.snap.workers if worker.native_id)
+
+    # The on-disk record is authoritative for the manager's lineage. Keep its parent's worker group
+    # distinct by reading only the lineage fields; stage/session worker identity remains unchanged.
+    records: list[tuple[Stage, Worker, str, str, str, int, tuple[int, ...], float]] = []
+    for source in stages:
+        directory = source.dir or source.path
+        for worker in source.snap.workers:
+            if not worker.name:
+                continue
+            lead_session, parent, root, depth, ancestors, launched_at = _co_worker_lineage(directory, worker.name)
+            if (lead_session and parent and root and depth >= 2 and lead_session != parent
+                    and parent in known_sessions):
+                records.append((source, worker, lead_session, parent, root, depth - 1, ancestors, launched_at))
+
+    # A manager launched with a pid file may have no native id. Its children's recorded process ancestry
+    # positively links that launch row to the promoted session; require one manager per pid.
+    pid_matches: dict[int, list[tuple[Stage, Stage, Worker, str, str, str, int, float]]] = {}
+    for owner_source, _, sid, parent, root, depth, ancestors, launched_at in records:
+        for parent_stage in stages:
+            if parent_stage.session_id != parent:
+                continue
+            for worker in parent_stage.snap.workers:
+                if worker.pid is None or worker.pid not in ancestors or worker.native_id:
+                    continue
+                if worker.has_report and worker.session != sid:
+                    continue
+                pid_matches.setdefault(worker.pid, []).append(
+                    (owner_source, parent_stage, worker, sid, parent, root, depth, launched_at))
+    unique_pid_matches: dict[int, tuple[Stage, Stage, Worker, str, str, str, int, float]] = {}
+    for pid, matches in pid_matches.items():
+        managers = {item[3] for item in matches}
+        rows = {id(item[2]) for item in matches}
+        if len(managers) == 1 and len(rows) == 1:
+            launches = [item[7] for item in matches if item[7] > 0]
+            earliest_launch = min(launches) if launches else 0.0
+            worker = matches[0][2]
+            finished_end_ok = (
+                worker.state in LIVE_STATES
+                or (worker.end is not None and worker.end > 0 and worker.end + 5.0 >= earliest_launch)
+            )
+            if (worker.start > 0 and earliest_launch > 0
+                    and worker.start <= earliest_launch + 5.0 and finished_end_ok):
+                unique_pid_matches[pid] = (*matches[0][:7], earliest_launch)
+
+    for pid, (owner_source, parent_stage, worker, sid, parent, root, depth, _) in unique_pid_matches.items():
+        kind = worker.harness or ""
+        manager = by_session.get(sid)
+        label = worker.title or worker.name or sid[-8:]
+        if manager is None:
+            manager = Stage(
+                path=f"{owner_source.path}#{sid}", dir=owner_source.dir or owner_source.path, label=label,
+                snap=Snapshot(title=label, now=parent_stage.snap.now, groups=[]),
+                lead_state="live" if worker.state in LIVE_STATES else "gone", lead_pid=worker.pid,
+                lead_since=worker.start, lead_kind=kind, session_id=sid,
+                session_name=_co_session_label(label, sid, label), parent=parent, root_session=root,
+                launch_depth=depth, tag=harness_label(kind, worker.account) if kind else "",
+                lead_model=worker.model, state="active" if worker.state in LIVE_STATES else "idle",
+                activity=worker.start, account=worker.account, harness=kind,
+            )
+            stages.append(manager)
+            by_session[sid] = manager
+            continue
+        has_live_lead = manager.lead_state == "live" or manager.lead_pid is not None
+        if not manager.label:
+            manager.label = label
+        if not manager.snap.title:
+            manager.snap.title = label
+        if not has_live_lead:
+            manager.lead_state = "live" if worker.state in LIVE_STATES else "gone"
+        if manager.lead_pid is None:
+            manager.lead_pid = worker.pid
+        if not manager.lead_since:
+            manager.lead_since = worker.start
+        manager.lead_kind = manager.lead_kind or kind
+        manager.lead_model = manager.lead_model or worker.model
+        manager.tag = manager.tag or (harness_label(kind, worker.account) if kind else "")
+        manager.account = manager.account or worker.account
+        manager.harness = manager.harness or kind
+        manager.session_name = manager.session_name or _co_session_label(label, sid, label)
+        if not manager.parent:
+            manager.parent, manager.root_session, manager.launch_depth = parent, root, depth
+        if not has_live_lead:
+            manager.state = "active" if worker.state in LIVE_STATES else "idle"
+        manager.activity = max(manager.activity, worker.start)
+
+    # Some native managers exist only as a worker row under their launcher. Their own stage workers
+    # prove the session identity and lineage, so create the manager station before attachment can
+    # treat that native row as an ordinary worker.
+    for owner_source, _, sid, parent, root, depth, _, _ in records:
+        native = next(((stage, worker) for stage in stages for worker in stage.snap.workers
+                       if worker.native_id == sid), None)
+        if native is None:
+            continue
+        parent_stage, worker = native
+        label = worker.title or worker.name or sid[-8:]
+        kind = worker.harness or ""
+        manager = by_session.get(sid)
+        if manager is None:
+            manager = Stage(
+                path=f"{owner_source.path}#{sid}", dir=owner_source.dir or owner_source.path, label=label,
+                snap=Snapshot(title=label, now=parent_stage.snap.now, groups=[]),
+                lead_state="live" if worker.state in LIVE_STATES else "gone", lead_pid=worker.pid,
+                lead_since=worker.start,
+                lead_kind=kind, session_id=sid, session_name=_co_session_label(label, sid, label),
+                parent=parent, root_session=root, launch_depth=depth,
+                tag=harness_label(kind, worker.account) if kind else "", lead_model=worker.model,
+                state="active" if worker.state in LIVE_STATES else "idle", activity=worker.start,
+                account=worker.account, native_id=sid, harness=kind,
+            )
+            stages.append(manager)
+            by_session[sid] = manager
+        else:
+            # A session bucket can predate the native row. Fill gaps from the row before it is
+            # removed, but don't let a historical worker row erase a discovered live lead.
+            has_live_lead = manager.lead_state == "live" or manager.lead_pid is not None
+            if not manager.label:
+                manager.label = label
+            if not manager.snap.title:
+                manager.snap.title = label
+            if not has_live_lead:
+                manager.lead_state = "live" if worker.state in LIVE_STATES else "gone"
+            if manager.lead_pid is None:
+                manager.lead_pid = worker.pid
+            if not manager.lead_since:
+                manager.lead_since = worker.start
+            manager.lead_kind = manager.lead_kind or kind
+            manager.tag = manager.tag or (harness_label(kind, worker.account) if kind else "")
+            manager.lead_model = manager.lead_model or worker.model
+            manager.account = manager.account or worker.account
+            manager.native_id = manager.native_id or sid
+            manager.harness = manager.harness or kind
+            manager.session_name = manager.session_name or _co_session_label(label, sid, label)
+            if not has_live_lead:
+                manager.state = "active" if worker.state in LIVE_STATES else "idle"
+            manager.activity = max(manager.activity, worker.start)
+
+    folded_pid_rows = {id(item[2]) for item in unique_pid_matches.values()}
+    for source, worker, sid, parent, root, depth, _, _ in records:
+        manager = by_session.get(sid)
+        if manager is None:
+            continue
+        if not manager.parent and not manager.root_session and not manager.launch_depth:
+            manager.parent, manager.root_session, manager.launch_depth = parent, root, depth
+
+    moved: dict[int, list[Worker]] = {}
+    changed: set[int] = set()
+    # A row carrying the manager's native session id is the manager itself, not another worker.
+    for stage in stages:
+        kept: list[Worker] = []
+        for worker in stage.snap.workers:
+            if id(worker) in folded_pid_rows:
+                changed.add(id(stage))
+                continue
+            if worker.native_id and by_session.get(worker.native_id) is not None and by_session[worker.native_id] is not stage:
+                changed.add(id(stage))
+                continue
+            record = next((item for item in records if item[0] is stage and item[1] is worker), None)
+            owner = by_session.get(record[2]) if record is not None else None
+            if (owner is not None and record is not None and record[2] == owner.session_id
+                    and owner is not stage and owner.session_id != stage.session_id):
+                worker.session = record[2]
+            if owner is None or owner is stage:
+                kept.append(worker)
+                continue
+            worker.home = worker.home or os.path.abspath(stage.dir or stage.path)
+            moved.setdefault(id(owner), []).append(worker)
+            changed.add(id(stage))
+        if len(kept) != len(stage.snap.workers):
+            stage.snap.workers = kept
+
+    for manager in by_session.values():
+        additions = moved.get(id(manager), [])
+        if additions:
+            known = {(worker.key, worker.home, worker.pid) for worker in manager.snap.workers}
+            manager.snap.workers = _co_order_workers(manager.snap.workers + [
+                worker for worker in additions if (worker.key, worker.home, worker.pid) not in known
+            ])
+            manager.snap.groups = _co_groups(manager.snap.workers, manager.snap.milestones)
+            manager.live = sum(worker.state in LIVE_STATES for worker in manager.snap.workers)
+            manager.solo = False
+    for stage in stages:
+        if id(stage) in changed:
+            stage.live = sum(worker.state in LIVE_STATES for worker in stage.snap.workers)
+            stage.snap.groups = _co_groups(stage.snap.workers, stage.snap.milestones)
+    return stages
+
+
+def _co_attach_executions(stages: list[Stage],
+                          procs: dict[int, tuple[int, int, int, int, int]] | None = None) -> list[Stage]:
     """Attach native execution members to exact live station identities and tag leftovers."""
+    procs = procs or {}
     stations: dict[str, Stage] = {}
     for stage in stages:
         key = _co_station_exec_key(stage)
@@ -4352,6 +4786,9 @@ def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
                              if os.path.normpath(os.path.join(station.dir, worker.name)) == os.path.normpath(execution.cwd)), None)
             if existing is None:
                 continue
+            if (existing.native_id and native_worker.native_id
+                    and existing.native_id != native_worker.native_id):
+                continue
             for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
                                "brief_text", "result_text", "purpose_source", "output_available"):
                 value = getattr(native_worker, field_name)
@@ -4376,15 +4813,26 @@ def _co_attach_executions(stages: list[Stage]) -> list[Stage]:
             existing = (next((worker for worker in target[0].snap.workers if worker.name == target[1]), None)
                         if target is not None else None)
             if existing is not None:
-                for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
-                                   "brief_text", "result_text", "purpose_source", "output_available"):
-                    value = getattr(native_worker, field_name)
-                    if value:
-                        setattr(existing, field_name, value)
+                if (existing.native_id and native_worker.native_id
+                        and existing.native_id != native_worker.native_id):
+                    continue
+                _co_fold_worker_into(existing, native_worker)
                 execution.snap.workers.remove(native_worker)
                 merged = True
                 break
         if merged and not execution.snap.workers:
+            dropped.add(id(execution))
+    # Historical Codex records did not persist native_id. Resolve only one-to-one pairs in the same cwd;
+    # ambiguous parallel launches remain visible as separate rows.
+    for station, existing, execution, native_worker in _co_codex_legacy_pairs(stages, procs):
+        if id(execution) in dropped or native_worker not in execution.snap.workers:
+            continue
+        if (existing.native_id and native_worker.native_id
+                and existing.native_id != native_worker.native_id):
+            continue
+        _co_fold_worker_into(existing, native_worker)
+        execution.snap.workers.remove(native_worker)
+        if not execution.snap.workers:
             dropped.add(id(execution))
     for stage in stages:
         if not stage.execution_id:
@@ -4479,13 +4927,15 @@ def _co_dedupe_sessions(stages: list[Stage]) -> list[Stage]:
             if other is win:
                 continue
             _co_merge_stage_fields(win, other)
-            if win.lead_pid is None and not (win.lead_kind == "opencode" and win.lead_state == "background"):
-                continue
-            have = {w.name for w in win.snap.workers}
             for wk in other.snap.workers:
-                if wk.name in have:      # the same worker seen from two stage dirs counts once
+                key = wk.key
+                home = wk.home
+                wk.home = wk.home or os.path.abspath(other.dir or other.path)
+                if any(_co_same_worker(w.key, w.home, w.pid, key, home, wk.pid) for w in win.snap.workers) or any(
+                        w.pid not in (None, 0) and wk.pid not in (None, 0) and w.pid == wk.pid
+                        and (w.key == key or not w.home or not wk.home)
+                        for w in win.snap.workers):
                     continue
-                wk.home = wk.home or other.dir or other.path
                 win.snap.workers.append(wk)
                 win.live += wk.state in LIVE_STATES
             win.snap.reviews.extend(other.snap.reviews)
@@ -5092,7 +5542,7 @@ class GlobalCollector:
                             child_sid = sidecar.get("sessionId", "")
                             if isinstance(child_sid, str) and child_sid:
                                 self._co_child_sessions[parent] = child_sid
-                        meta = _co_lead_session("", lead, self._co_child_session(parent))
+                        meta = _co_lead_session("", lead, self._co_child_session(parent), procs)
                         parent_sid = meta.get("session_id")
                         if isinstance(parent_sid, str) and parent_sid:
                             ancestry[pid] = (execution_key(lead.kind.split()[0], account, parent_sid), "")
@@ -5236,6 +5686,8 @@ class GlobalCollector:
             root = root or ExecutionRecord(root_id, role="lead", linkage="unknown")
             unattached = root_id.startswith("unattached:")
             global_unattached = root_id == "unattached:global"
+            if root_item is None and members:
+                root.title = members[0].record.title
             if root_item is None and members and not unattached:
                 identities = {(item.record.harness, item.record.account) for item in members
                               if item.record.harness and item.record.account}
@@ -5285,7 +5737,8 @@ class GlobalCollector:
                 solo=live and not workers, state=state,
                 activity=activity_at, cwd=root.cwd, execution_id=root.execution_id,
                 account=root.account, parent_id=root.parent_id, root_id=root_id,
-                goal=root.goal, brief_text=root_item.brief.splitlines() if root_item is not None else [], linkage=root.linkage,
+                goal=root.goal, session_name=root.title,
+                brief_text=root_item.brief.splitlines() if root_item is not None else [], linkage=root.linkage,
                 native_id=root.native_id, outcome=root.outcome, purpose_source=root.purpose_source,
                 unlinked=global_unattached, unattached=global_unattached or folded,
             )
@@ -5502,7 +5955,7 @@ class GlobalCollector:
             if path in virtual:
                 # a session with no stage dir: its lead is present by construction, so never idle or dismissed
                 if lead is not None:
-                    meta = _co_lead_session(path, lead, self._co_child_session(lead.pid))
+                    meta = _co_lead_session(path, lead, self._co_child_session(lead.pid), self._co_proc_table())
                     lead_activity = float(meta.get("activity", 0.0) or 0.0)
                     extras = (self._co_opencode_extras(lead, str(meta["session_id"]), now, set(), set())
                               if lead.kind == "opencode" else [])
@@ -5583,7 +6036,8 @@ class GlobalCollector:
             last = _co_last_activity(snap)
             if lead is None and live == 0 and last < now - SESSION_GAP_S:   # the snapshot only holds the latest session
                 last = max(last, _co_stage_status(path)[0])
-            meta = _co_lead_session(path, lead, self._co_child_session(lead.pid) if lead else "")
+            meta = _co_lead_session(path, lead, self._co_child_session(lead.pid) if lead else "",
+                                    self._co_proc_table())
             live_sid = meta["session_id"]
             if lead is not None and lead.kind == "opencode":
                 extras = self._co_opencode_extras(lead, str(live_sid), now,
@@ -5691,7 +6145,8 @@ class GlobalCollector:
                                if not any(path == real_path for real_path, _ in self._co_found)}
         stages, newly_dismissed = _co_filter_dismissed_stages(stages, appended_dismissals)
         dismissed_count += newly_dismissed
-        stages = _co_attach_executions(stages)
+        stages = _co_apply_manager_lineage(stages)
+        stages = _co_attach_executions(stages, self._co_proc_table())
         stages = _co_adopt_by_session(stages)
         # A real stage row wins duplicate session ids over a virtual row; workers break ties.
         stages = _co_dedupe_sessions(stages)
@@ -5761,7 +6216,10 @@ class GlobalCollector:
     def detail(self, stage_path: str, name: str, tab: str) -> list[str]:
         collector = self.collector_for(stage_path)
         stage = next((s for s in self._co_last_stages if s.path == stage_path), None)
-        wk = next((w for w in stage.snap.workers if w.name == name), None) if stage is not None else None
+        wk = next((w for w in stage.snap.workers if w.key == name), None) if stage is not None else None
+        if wk is None and stage is not None:
+            matches = [w for w in stage.snap.workers if w.name == name]
+            wk = matches[0] if len(matches) == 1 else None
         if wk is not None and wk.home:     # a worker launched from another project's stage dir
             collector = self._co_collectors.get(wk.home) or collector
         execution_id = wk.execution_id if wk is not None else stage.execution_id if stage is not None else ""
@@ -5775,7 +6233,7 @@ class GlobalCollector:
                 text = evidence.brief if kind == "brief" else evidence.result
                 if text:
                     return text.replace("\t", "    ").splitlines()[:_co_max_detail]
-        return collector.detail(name, tab) if collector is not None else []
+        return collector.detail(wk.name if wk is not None else name, tab) if collector is not None else []
 
     def close(self) -> None:
         collectors, self._co_collectors = list(self._co_collectors.values()), {}
@@ -6061,6 +6519,7 @@ def files_page(stage_dir: str, worker: Worker | None) -> list[str]:
     else the files under its stage folder. A read-only worker gets one line saying no changes are expected."""
     if worker is None:
         return ["no worker selected: move the cursor onto a worker row"]
+    stage_dir = worker.home or stage_dir
     read_only = worker.is_review or worker.job in _co_read_only_jobs
     cwd = _co_brief_cwd(_co_brief_path(stage_dir, worker.name))
     if cwd and os.path.exists(os.path.join(cwd, ".git")):

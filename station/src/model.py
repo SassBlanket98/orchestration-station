@@ -1,6 +1,7 @@
 """Shared data model for the workers dashboard and execution registry."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -174,6 +175,7 @@ class Worker:
     effort: str = ""                     # reasoning effort ("low", "medium", "high", ...); "" if unknown
     session: str = ""                    # id of the lead session that launched it (from <name>.session); "" if unlinked
     home: str = ""                       # the stage dir it lives in when its session row sits in another stage; "" = the row's own
+    parent_key: str = ""                  # identity of parent worker; parent remains its display name
     execution_id: str = ""
     account: str = ""
     native_id: str = ""
@@ -201,6 +203,16 @@ class Worker:
     resume_cmd: str = ""                 # e.g. "codex resume <id>"; "" = cannot resume
     calls: list[CCCall] = field(default_factory=list)        # tool calls, newest LAST, at most 200
 
+    @property
+    def key(self) -> str:
+        """Stable identity for a worker, separate from its visible name and file basename."""
+        if self.execution_id and (not self.home or self.native_id):
+            return self.execution_id
+        if not self.home:
+            return self.name
+        stage = os.path.normpath(os.path.abspath(self.home))
+        return json.dumps([stage, self.name], ensure_ascii=False, separators=(",", ":"))
+
 
 @dataclass
 class Group:
@@ -214,10 +226,12 @@ class Group:
     finished: bool = False               # every worker is done
     finished_at: float | None = None     # newest end, once finished
     current: bool = False                # active: has a live worker (any number of groups), or the newest group when none is live
+    worker_keys: list[str] = field(default_factory=list)  # aligned identity keys; empty for legacy groups
+    stage: str = ""                      # origin stage basename when known
 
     @property
     def key(self) -> str:
-        return "|".join(self.workers)
+        return "|".join(self.worker_keys or self.workers)
 
 
 @dataclass
@@ -626,24 +640,29 @@ class UIState:
 def nest_workers(workers: list[Worker]) -> list[Worker]:
     """``workers`` with each nested worker moved right after the worker that launched it (children in the order given,
     at any depth). A worker whose ``parent`` is not in the list, or that would close a loop, stays where it was."""
-    names = {wk.name for wk in workers}
+    names: dict[str, list[Worker]] = {}
+    for wk in workers:
+        names.setdefault(wk.name, []).append(wk)
+    keys = {wk.key for wk in workers}
     kids: dict[str, list[Worker]] = {}
     for wk in workers:
-        if wk.parent and wk.parent in names and wk.parent != wk.name:
-            kids.setdefault(wk.parent, []).append(wk)
+        parent_key = wk.parent_key or (names[wk.parent][0].key if wk.parent in names and len(names[wk.parent]) == 1 else "")
+        if parent_key and parent_key in keys and parent_key != wk.key:
+            wk.parent_key = parent_key
+            kids.setdefault(parent_key, []).append(wk)
     out: list[Worker] = []
     seen: set[str] = set()
 
     def add(wk: Worker) -> None:
-        if wk.name in seen:
+        if wk.key in seen:
             return
-        seen.add(wk.name)
+        seen.add(wk.key)
         out.append(wk)
-        for child in kids.get(wk.name, ()):
+        for child in kids.get(wk.key, ()):
             add(child)
 
     for wk in workers:
-        if not (wk.parent and wk.parent in names and wk.parent != wk.name):
+        if not any(child.key == wk.key for group in kids.values() for child in group):
             add(wk)
     for wk in workers:   # a parent loop has no root: keep its members listed
         add(wk)

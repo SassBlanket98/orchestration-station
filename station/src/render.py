@@ -267,7 +267,7 @@ def _rd_accent_color(wk: Worker, t: float) -> _wd_Rgb:
 
 def _rd_flash(ui: UIState, wk: Worker, t: float) -> tuple[_wd_Rgb, float] | None:
     """(target colour, fraction faded) while a worker's flash is running, else None."""
-    ts = ui.flashes.get(wk.name)
+    ts = ui.flashes.get(wk.key)
     if ts is None:
         return None
     age = t - ts
@@ -405,10 +405,15 @@ def _rd_plan(snap: Snapshot, ui: UIState) -> tuple[list[Group], list[tuple[int, 
     if ui.density != "full" or not currents:
         live, fin = _rd_split(snap, list(range(len(snap.workers))))
         return [], live, fin, []
-    index = {wk.name: i for i, wk in enumerate(snap.workers)}
+    index = {wk.key: i for i, wk in enumerate(snap.workers)}
+    by_name: dict[str, list[int]] = {}
+    for i, wk in enumerate(snap.workers):
+        by_name.setdefault(wk.name, []).append(i)
 
     def members(group: Group) -> list[int]:
-        return [index[name] for name in group.workers if name in index]
+        if group.worker_keys:
+            return [index[key] for key in group.worker_keys if key in index]
+        return [by_name[name][0] for name in group.workers if len(by_name.get(name, [])) == 1]
 
     live: list[tuple[int, Worker]] = []
     fin: list[tuple[int, Worker]] = []
@@ -442,8 +447,11 @@ def _rd_cursor_stop(snap: Snapshot, ui: UIState) -> str:
     if _rd_wstop(ui.sel) in stops:
         return _rd_wstop(ui.sel)
     if 0 <= ui.sel < len(snap.workers):
-        name = snap.workers[ui.sel].name
-        line = next((_RD_GROUP + group.key for group in snap.groups if name in group.workers), "")
+        worker = snap.workers[ui.sel]
+        line = next((_RD_GROUP + group.key for group in snap.groups
+                     if worker.key in group.worker_keys or
+                     (not group.worker_keys and worker.name in group.workers and
+                      sum(item.name == worker.name for item in snap.workers) == 1)), "")
         if line in stops:
             return line
         if line and _RD_GROUP + _RD_EARLIER in stops:   # its group is inside the folded "earlier" line
@@ -621,9 +629,9 @@ def _rd_station_keys(snap: Snapshot, ui: UIState, sel: int, stage: Stage | None)
     elif 0 <= sel < len(snap.workers):
         wk = snap.workers[sel]
         if _rd_is_live(wk):
-            keys.append(("Enter", "fold" if wk.name in ui.expanded else "unfold"))
+            keys.append(("Enter", "fold" if wk.key in ui.expanded else "unfold"))
         else:
-            keys.append(("Enter", "collapse" if wk.name in ui.expanded else "expand"))
+            keys.append(("Enter", "collapse" if wk.key in ui.expanded else "expand"))
         keys.append(("Space", "open"))
     if ui.gpage in ("stage", "worker"):
         keys.append(("Esc", "back"))
@@ -948,7 +956,10 @@ def _rd_group_head(group: Group, t: float, w: int) -> str:
 def _rd_group_line(snap: Snapshot, group: Group, opened: bool, selected: bool, now: float, w: int) -> str:
     """An earlier group on one line: ▸ folded or ▾ open, its label, worker count, ✔ or ✖ with the time it ended (or
     ● running), then how long it ran."""
-    failed = any(wk.state == FAILED for wk in snap.workers if wk.name in group.workers)
+    members = (set(group.worker_keys) if group.worker_keys else
+               {wk.key for wk in snap.workers if wk.name in group.workers and
+                sum(item.name == wk.name for item in snap.workers) == 1})
+    failed = any(wk.state == FAILED for wk in snap.workers if wk.key in members)
     mark = _wd_c("▾ " if opened else "▸ ", _wd_C_BLUE if selected else _wd_C_MUTED)
     name = _wd_c(_wd_clean(group.label), _wd_C_BLUE if selected else _wd_C_TEXT, bold=True)
     if group.finished:
@@ -1089,7 +1100,7 @@ def _rd_workers_box(snap: Snapshot, ui: UIState, body: list[str], own: list[int 
         if isinstance(owner, str):   # an earlier group's line
             _rd_hit(ui, k + 1, k + 1, 1, w - 2, "group", owner[len(_RD_GROUP):])
         elif owner is not None:
-            _rd_hit(ui, k + 1, k + 1, 1, w - 2, "select", snap.workers[owner].name)
+            _rd_hit(ui, k + 1, k + 1, 1, w - 2, "select", snap.workers[owner].key)
     return _wd_box(body, w, h, title)
 
 
@@ -1293,7 +1304,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
 
     def worker_block(i: int, wk: Worker) -> list[str]:
         # a finished worker shows its summary below its row while it is in ui.expanded
-        opened = wk.name in ui.expanded
+        opened = wk.key in ui.expanded
         block = [row(i, wk, rail if i == sel else " ", opened)]
         if opened:
             block += [rail + ln for ln in _rd_grid_detail(wk, w)]
@@ -1311,7 +1322,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
     keep = 1 if fin else 0          # the "+N more finished" line
     # the richest card level at which every open live card and every other row still fit
     room = avail - len(body) - keep
-    open_live = [(i, wk) for i, wk in live if wk.name in ui.expanded]
+    open_live = [(i, wk) for i, wk in live if wk.key in ui.expanded]
     flashes = {i: _rd_flash(ui, wk, t) for i, wk in open_live}
     rests: dict[int, tuple[list[str], tuple[_wd_Rgb, float] | None]] = {}
     for lvl in range(1, len(_rd_LEVELS)):
@@ -1359,7 +1370,7 @@ def _rd_worker_lines(snap: Snapshot, ui: UIState, sel: int, iw: int, avail: int,
         if opened:
             earlier_blocks += [(i, worker_block(i, wk)) for i, wk in g_live + g_fin]
     sel_owner: int | str | None = int(cursor[1:]) if cursor.startswith("w") else cursor
-    open_k = next((k for k, (_, wk) in enumerate(fin) if wk.name in ui.expanded), None)
+    open_k = next((k for k, (_, wk) in enumerate(fin) if wk.key in ui.expanded), None)
     # the current group's finished rows keep at most half of what is left; the earlier groups get the rest
     f_need = sum(len(block) for _, block in fin_blocks)
     e_need = sum(len(block) for _, block in earlier_blocks)
@@ -3042,13 +3053,17 @@ def _rd_g_is_section_row(kind: str, name: str) -> bool:
 def _rd_g_task_list(row: _rd_GRow) -> list[Group]:
     """A session's tasks, newest first. Workers that no task holds (a hand-built snapshot) form one more task."""
     groups = list(row.stage.snap.groups)
-    held = {name for group in groups for name in group.workers}
-    loose = [wk for wk in row.workers if wk.name not in held]
+    held = {key for group in groups for key in group.worker_keys}
+    held_names = {name for group in groups if not group.worker_keys for name in group.workers}
+    name_counts = {name: sum(wk.name == name for wk in row.workers) for name in {wk.name for wk in row.workers}}
+    loose = [wk for wk in row.workers if wk.key not in held and not (wk.name in held_names and name_counts[wk.name] == 1)]
     if loose:
         live = [wk for wk in loose if wk.state in LIVE_STATES]
         extra = Group(label="workers", workers=[wk.name for wk in loose], started=min(wk.start for wk in loose),
                       done=len(loose) - len(live), total=len(loose), live=len(live),
-                      current=bool(live) or not any(group.current for group in groups))
+                      current=bool(live) or not any(group.current for group in groups),
+                      worker_keys=[wk.key for wk in loose],
+                      stage=os.path.basename(os.path.normpath(loose[0].home)) if loose[0].home else "")
         groups = [extra] + groups if live else groups + [extra]
     return groups
 
@@ -3057,22 +3072,32 @@ def _rd_g_tasks(row: _rd_GRow) -> tuple[list[tuple[Group, list[Worker]]], int]:
     """A session's tasks, newest first, each with its workers (live first, then finished, newest first), and how many
     of them list their workers: a task with a live or failed worker (kept first, in order). A finished task is one line that
     Enter opens (the user 2026-10-24: done workers must not sit open); the older ones fold under `+N done`."""
-    by_name = {wk.name: wk for wk in row.workers}
-    nested = {wk.name for wk in row.workers if wk.level and wk.parent in by_name}   # listed under their launcher, not in a task of their own
+    by_key = {wk.key: wk for wk in row.workers}
+    by_name: dict[str, list[Worker]] = {}
+    for wk in row.workers:
+        by_name.setdefault(wk.name, []).append(wk)
+    nested = {wk.key for wk in row.workers if wk.level and (wk.parent_key in by_key or
+              (not wk.parent_key and len(by_name.get(wk.parent, [])) == 1))}
     kids: dict[str, list[Worker]] = {}
     for wk in row.workers:
-        if wk.name in nested:
-            kids.setdefault(wk.parent, []).append(wk)
+        parent_key = wk.parent_key or (by_name[wk.parent][0].key if len(by_name.get(wk.parent, [])) == 1 else "")
+        if wk.key in nested and parent_key:
+            kids.setdefault(parent_key, []).append(wk)
 
     def with_kids(wk: Worker, seen: frozenset[str]) -> list[Worker]:
         out = [wk]
-        for kid in kids.get(wk.name, ()):
-            if kid.name not in seen:
-                out += with_kids(kid, seen | {wk.name})
+        for kid in kids.get(wk.key, ()):
+            if kid.key not in seen:
+                out += with_kids(kid, seen | {wk.key})
         return out
     tasks = []
     for group in _rd_g_task_list(row):
-        members = [by_name[name] for name in dict.fromkeys(group.workers) if name in by_name and name not in nested]   # a re-run brief lists its name twice
+        if group.worker_keys:
+            group_members = [by_key[key] for key in dict.fromkeys(group.worker_keys) if key in by_key]
+        else:
+            group_members = [by_name[name][0] for name in dict.fromkeys(group.workers)
+                             if len(by_name.get(name, [])) == 1]
+        members = [wk for wk in group_members if wk.key not in nested]
         if not members:
             continue
         live = [wk for wk in members if wk.state in LIVE_STATES]
@@ -3141,6 +3166,7 @@ class _rd_GNode:
     row: _rd_GRow
     kind: str
     name: str
+    worker_key: str = ""
     depth: int = 0
     prefix: str = ""
     cont: str = ""
@@ -3187,20 +3213,20 @@ def _rd_g_station_nodes(ui: UIState, row: _rd_GRow, depth: int) -> list[_rd_GNod
         return nodes
     kept, folded = _rd_g_unlinked_split(row)
     if folded:   # a session-unknown group lists its newest workers; Enter on the fold shows the rest
-        nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in kept)
+        nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in kept)
         nodes.append(_rd_GNode(row, "more", _rd_G_UNLINKED_MORE, depth=depth + 1))
         if (row.stage.path, "more", _rd_G_UNLINKED_MORE) in ui.gopen:
-            nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in folded)
+            nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in folded)
         return nodes
     tasks, shown = _rd_g_tasks(row)
     for _group, members in tasks[:shown]:
-        nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 1 + max(0, wk.level)) for wk in members)
+        nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 1 + max(0, wk.level)) for wk in members)
 
     def task_nodes(pairs: list[tuple[Group, list[Worker]]]) -> None:
         for group, members in pairs:
             nodes.append(_rd_GNode(row, "task", group.key, depth=depth + 1))
             if (row.stage.path, "task", group.key) in ui.gopen:
-                nodes.extend(_rd_GNode(row, "worker", wk.name, depth=depth + 2 + max(0, wk.level)) for wk in members)
+                nodes.extend(_rd_GNode(row, "worker", wk.name, worker_key=wk.key, depth=depth + 2 + max(0, wk.level)) for wk in members)
     direct, folded = _rd_g_task_split(tasks, shown)
     task_nodes(direct)   # a finished task: one line, Enter lists its workers
     if folded:
@@ -3291,12 +3317,13 @@ def _rd_g_nodes(gs: GlobalSnapshot, ui: UIState) -> list[_rd_GNode]:
 
 def _rd_g_layout(gs: GlobalSnapshot, ui: UIState) -> list[tuple[_rd_GRow, str, str]]:
     """Selectable session, worker, task, project and fold rows in screen order. Fill rows are not here."""
-    return [(node.row, node.kind, node.name) for node in _rd_g_nodes(gs, ui)]
+    return [(node.row, node.kind, node.worker_key if node.kind == "worker" else node.name) for node in _rd_g_nodes(gs, ui)]
 
 
 def global_rows(gs: GlobalSnapshot, ui: UIState) -> list[tuple[str, str, str]]:
     """Selectable rows, top to bottom: (stage path, kind, name). A heading and its fold row have no path."""
-    return [("" if _rd_g_is_section_row(node.kind, node.name) else node.row.stage.path, node.kind, node.name)
+    return [("" if _rd_g_is_section_row(node.kind, node.name) else node.row.stage.path, node.kind,
+             node.worker_key if node.kind == "worker" else node.name)
             for node in _rd_g_nodes(gs, ui)]
 
 
@@ -3346,7 +3373,7 @@ def _rd_g_metric_cells(nodes: list[_rd_GNode], now: float) -> list[_og_Cells]:
         elif node.kind == "stage":
             out.append(_og_stage_cells(node.row.stage, now))
         elif node.kind == "worker":
-            wk = next(x for x in node.row.workers if x.name == node.name)
+            wk = next(x for x in node.row.workers if x.key == node.worker_key)
             out.append(_og_worker_cells(wk, now))
     return out
 
@@ -4166,9 +4193,9 @@ def _rd_g_fill(gs: GlobalSnapshot, ui: UIState, nodes: list[_rd_GNode], plan: _o
             break
         if node.kind != "worker":
             continue
-        if (node.row.stage.path, "worker", node.name) in ui.gopen or (plan.control_center and node.name in ui.expanded):
+        if (node.row.stage.path, "worker", node.worker_key) in ui.gopen or (plan.control_center and node.worker_key in ui.expanded):
             continue   # an opened worker's detail already lists its steps; no second copy below it
-        wk = next((x for x in node.row.workers if x.name == node.name), None)
+        wk = next((x for x in node.row.workers if x.key == node.worker_key), None)
         if wk is None or wk.state not in LIVE_STATES or not wk.log.steps:
             continue
         width = max(10, cols - _wd_width(node.cont) - 2)
@@ -4238,7 +4265,7 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
         if node.kind == "stage" and not node.row.solo and _rd_g_is_open(ui, node.row):
             tasks, shown = _rd_g_tasks(node.row)
             if len(tasks) > 1:
-                heads.update({(node.row.stage.path, members[0].name): group
+                heads.update({(node.row.stage.path, members[0].key): group
                               for group, members in tasks[:shown] if members})
     blocks: list[list] = []      # [layout index, lines, the row of the selectable line]
     cc_command_hits: dict[int, int] = {}
@@ -4255,15 +4282,15 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
         elif node.kind == "stage":
             lines += _rd_g_session_lines(plan, node, names, short, ui, t, now, selected, _rd_g_swarm_workers(r))
         elif node.kind == "worker":
-            wk = next(x for x in r.workers if x.name == node.name)
-            if (r.stage.path, node.name) in heads:
-                lines.append(_rd_g_task_head(heads[(r.stage.path, node.name)], cols, node.depth))
-            cc_expanded = control_center and node.name in ui.expanded
+            wk = next(x for x in r.workers if x.key == node.worker_key)
+            if (r.stage.path, wk.key) in heads:
+                lines.append(_rd_g_task_head(heads[(r.stage.path, wk.key)], cols, node.depth))
+            cc_expanded = control_center and wk.key in ui.expanded
             wl, link_at = _rd_g_worker_row(r, wk, node.prefix, node.cont, plan, cols, t, selected,
-                                           (r.stage.path, "worker", node.name) in ui.gopen or cc_expanded, now, cc_expanded)
+                                           (r.stage.path, "worker", wk.key) in ui.gopen or cc_expanded, now, cc_expanded)
             if control_center:
                 finished = wk.state not in LIVE_STATES and wk.state != FAILED   # the user 2026-10-24: a done worker is one line
-                shown = cc_expanded or (r.stage.path, "worker", node.name) in ui.gopen   # opened by click or by Enter
+                shown = cc_expanded or (r.stage.path, "worker", wk.key) in ui.gopen   # opened by click or by Enter
                 command = [] if finished and not shown else command_lines(
                     wk, cols, cc_expanded, node.cont, plan.cols - plan.fixed - 1, 2)
                 if command:
@@ -4272,7 +4299,7 @@ def _rd_g_tree(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float,
                 if link_at is not None:   # the command lines went in above the card, so its Files link moved down
                     link_at += len(command)
             if link_at is not None:
-                links[i] = (len(lines) + link_at, r.stage.path, node.name)
+                links[i] = (len(lines) + link_at, r.stage.path, wk.key)
             lines += wl
         elif node.kind == "task":
             group = next(g for g, _ in _rd_g_tasks(r)[0] if g.key == node.name)
@@ -4397,7 +4424,7 @@ def _rd_g_page(gs: GlobalSnapshot, ui: UIState, cols: int, rows: int, t: float) 
         body = _sv_page(stage, ui, cols, max(0, rows - 1), t)
         return body[:max(0, rows - 1)] + [_rd_keyline(SV_KEYS, cols, ui, rows - 1)]
     if stage is not None and ui.gpage == "wk":
-        wk = next((x for x in stage.snap.workers if x.name == ui.gworker), None)
+        wk = next((x for x in stage.snap.workers if x.key == ui.gworker), None)
         if wk is not None:
             body = _wv_page(stage, wk, ui, cols, max(0, rows - 1), t)
             return body[:max(0, rows - 1)] + [_rd_keyline(WV_KEYS, cols, ui, rows - 1)]

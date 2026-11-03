@@ -511,6 +511,8 @@ class Stations(unittest.TestCase):
         pid_path = os.path.join(self.stage, "w1.pid")
         with open(pid_path, "w", encoding="utf-8") as fh:
             fh.write("30")
+        with open(os.path.join(self.stage, "w1.model"), "w", encoding="utf-8") as fh:
+            fh.write("test-model")
         os.utime(pid_path, (NOW - 60, NOW - 60))
         self.add_lead(30, ["claude", "-p", "--model", "x"], self.project())
         rows = [s for s in self.snap().stages if s.dir == self.stage]
@@ -740,6 +742,8 @@ class Stations(unittest.TestCase):
             fh.write("999999\n")
         with open(os.path.join(self.stage, "w1.log"), "w", encoding="utf-8") as fh:
             fh.write("done\n")
+        with open(os.path.join(self.stage, "w1.model"), "w", encoding="utf-8") as fh:
+            fh.write("test-model")
         os.utime(os.path.join(self.stage, "w1.pid"), (NOW - 30, NOW - 30))
         os.makedirs(os.path.join(self.stage, "briefs"), exist_ok=True)
         with open(os.path.join(self.stage, "briefs", "w1.md"), "w", encoding="utf-8") as fh:
@@ -755,6 +759,8 @@ class Stations(unittest.TestCase):
         self.add_lead(11, ["codex"], self.project(), NOW - 60)
         with open(os.path.join(self.stage, "w.pid"), "w", encoding="utf-8") as fh:
             fh.write("999999\n")
+        with open(os.path.join(self.stage, "w.model"), "w", encoding="utf-8") as fh:
+            fh.write("test-model")
         os.utime(os.path.join(self.stage, "w.pid"), (NOW - 30, NOW - 30))
         gs = self.snap()
         unlinked = next(row for row in gs.stages if row.unlinked)
@@ -764,6 +770,8 @@ class Stations(unittest.TestCase):
         self.add_lead(10, ["claude"], self.project(), NOW - 60)
         with open(os.path.join(self.stage, "w.pid"), "w", encoding="utf-8") as fh:
             fh.write("999999\n")
+        with open(os.path.join(self.stage, "w.model"), "w", encoding="utf-8") as fh:
+            fh.write("test-model")
         os.utime(os.path.join(self.stage, "w.pid"), (NOW - 120, NOW - 120))
         gs = self.snap()
         unlinked = next(row for row in gs.stages if row.unlinked)
@@ -776,6 +784,8 @@ class Stations(unittest.TestCase):
         for age, expected in ((120, "active"), (840, "active"), (1200, "idle")):
             with open(pid_path, "w", encoding="utf-8") as fh:
                 fh.write("999999\n")
+            with open(os.path.join(self.stage, "w.model"), "w", encoding="utf-8") as fh:
+                fh.write("test-model")
             with open(log_path, "w", encoding="utf-8") as fh:
                 fh.write("finished\n")
             os.utime(pid_path, (NOW - age, NOW - age))

@@ -104,7 +104,7 @@ class TestAttachExecutions(unittest.TestCase):
 
         collect._co_attach_executions([row])
 
-        self.assertEqual(row.tag, "CDX")
+        self.assertEqual(row.tag, "Codex")
         self.assertEqual(row.lead_kind, "codex")
 
     def test_synthetic_root_inherits_member_identity_for_leftover_tag(self) -> None:
@@ -187,6 +187,18 @@ class TestOwnNativeRow(unittest.TestCase):
         collect._co_nest_workers([stage], {})
         self.assertEqual([w.name for w in stage.snap.workers], ["probe"])
         self.assertEqual(stage.snap.workers[0].native_id, "nat1")
+
+    def test_subagent_of_the_folded_native_session_keeps_its_parent(self) -> None:
+        stage = self._stage(104.0)
+        sub = Worker(name="sub", state="running", start=160.0, pid=600, family="claude",
+                     execution_id="exec2", native_id="nat2", ancestors=(503, 500), launched=150.0)
+        stage.snap.workers.append(sub)
+        collect._co_nest_workers([stage], {})
+        rows = {w.name: w for w in stage.snap.workers}
+        self.assertEqual(sorted(rows), ["probe", "sub"])
+        self.assertEqual(rows["sub"].parent_key, rows["probe"].key)
+        self.assertEqual(rows["sub"].parent, "probe")
+        self.assertEqual(rows["sub"].level, 1)
 
     def test_a_later_subagent_stays_a_separate_child(self) -> None:
         stage = self._stage(160.0)

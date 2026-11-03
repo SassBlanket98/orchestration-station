@@ -131,6 +131,17 @@ class Toggle(unittest.TestCase):
         keys(ui, gs, "o")
         self.assertEqual((ui.gpage, ui.gstage, ui.gworker), ("wk", "/a", "w2"))   # a worker row opens its own page
 
+    def test_enter_on_session_page_opens_worker_by_identity_key(self) -> None:
+        worker = Worker("w1", RUNNING, home="/stage/a")
+        stage_row = stage("/stage/a", "alpha", [worker])
+        gs, ui = gs_of(stage_row), UIState(gpage="sess", gstage="/stage/a")
+
+        app._ap_global_key(ui, "enter", gs, 30)
+
+        self.assertEqual(ui.gpage, "wk")
+        self.assertEqual(ui.gworker, worker.key)
+        self.assertTrue(app._ap_global_validate_page(ui, gs, ui.gworker))
+
     def test_expand_all_and_collapse_all(self) -> None:
         gs, ui = fixture(), UIState()
         keys(ui, gs, "c")

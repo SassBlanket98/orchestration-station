@@ -212,7 +212,7 @@ class SessionData(unittest.TestCase):
                    Worker("closed-worker", DONE, session="closed"),
                    Worker("legacy-worker", DONE)]
         with mock.patch.object(collect, "_co_lead_session", return_value={
-            "session_id": "live", "session_name": "", "tag": "CUR", "lead_model": "", "effort": "",
+            "session_id": "live", "session_name": "", "tag": "Cursr", "lead_model": "", "effort": "",
             "parent": "launcher", "root_session": "root", "launch_depth": 2,
             "app": True, "app_id": "bridge", "tmux": "heading",
         }), mock.patch.object(collect.Collector, "snapshot", return_value=Snapshot(
@@ -234,7 +234,7 @@ class SessionData(unittest.TestCase):
         for row in (rows["closed"], rows["unlinked"]):
             self.assertEqual((row.parent, row.root_session, row.launch_depth, row.app, row.app_id, row.tmux),
                              ("", "", 0, False, "", ""))
-        self.assertEqual((rows["live"].tag, rows["closed"].tag, rows["unlinked"].tag), ("CUR", "", ""))
+        self.assertEqual((rows["live"].tag, rows["closed"].tag, rows["unlinked"].tag), ("Cursr", "", ""))
 
 
     def test_a_lead_json_naming_another_pid_is_ignored(self) -> None:

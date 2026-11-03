@@ -248,5 +248,5 @@ def _sv_key(ui: UIState, stage: Stage, key: str, rows: int) -> str:
     elif key == "end":
         ui.sel = max(0, count - 1)
     elif key in ("enter", "space", "o", "right", "l") and count:
-        return "worker:" + stage.snap.workers[ui.sel].name
+        return "worker:" + stage.snap.workers[ui.sel].key
     return ""

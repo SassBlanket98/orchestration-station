@@ -22,7 +22,7 @@ _CX_ANSI_RE = re.compile(
 
 def row_key(stage: Stage, worker: Worker | None = None) -> str:
     """The key an event carries: "<stage path>|<worker name>"; the lead row's worker part is empty."""
-    return f"{stage.path}|{worker.name if worker is not None else ''}"
+    return f"{stage.path}|{worker.key if worker is not None else ''}"
 
 
 def row_events(stage: Stage, worker: Worker | None = None, limit: int = ROW_LIMIT) -> list[CCEvent]:

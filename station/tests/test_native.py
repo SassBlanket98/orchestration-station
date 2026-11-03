@@ -7,8 +7,11 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
+
+import collect
 
 NOW = 1791749000
 
@@ -61,6 +64,380 @@ class NativeEvidence(unittest.TestCase):
             self.assertEqual(item.record.goal, "inspect adapter")
             self.assertEqual(item.record.parent_id, self.api().execution_key("codex", "personal", "parent"))
             self.assertEqual(item.record.outcome, "success")
+
+    def test_native_session_titles_use_first_real_user_prompt(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-codex.jsonl", [
+                self.meta("codex-12345678"),
+                self.user("AGENTS.md instructions\n<environment_context>cwd=/tmp</environment_context>\n"
+                          "# Repair the dashboard names\nmore detail"),
+            ])
+            codex_item = api.read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(codex_item.record.title, "Repair the dashboard names")
+
+            index = Path(home) / ".codex/session_index.jsonl"
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_text(json.dumps({"thread_id": "codex-12345678", "thread_name": "Codex explicit name"}) + "\n")
+            codex_item = api.read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(codex_item.record.title, "Codex explicit name")
+
+            claude_dir = Path(home) / ".claude/projects/p"
+            claude_dir.mkdir(parents=True)
+            claude_path = claude_dir / "claude-12345678.jsonl"
+            claude_path.write_text("\n".join(json.dumps(row) for row in [
+                {"type": "system", "subtype": "system-reminder", "sessionId": "claude-12345678",
+                 "message": {"role": "user", "content": "<system-reminder>rules</system-reminder>"}},
+                {"type": "user", "sessionId": "claude-12345678", "cwd": "/tmp",
+                 "message": {"role": "user", "content": "# Review the session row"}},
+            ]) + "\n")
+            claude_item = api.read_native_executions("claude", home, NOW)[0]
+            self.assertEqual(claude_item.record.title, "Review the session row")
+
+            cursor_dir = Path(home) / ".cursor/projects/p/agent-transcripts/cursor-12345678"
+            cursor_dir.mkdir(parents=True)
+            cursor_meta = Path(home) / ".cursor/chats/project/cursor-12345678"
+            cursor_meta.mkdir(parents=True)
+            (cursor_meta / "meta.json").write_text(json.dumps({"schemaVersion": 1, "cwd": "/tmp"}))
+            (cursor_dir / "cursor-12345678.jsonl").write_text(json.dumps({
+                "role": "user", "message": {"content": [{"type": "text",
+                    "text": "<user_query>\n**Name the Cursor session**\nDo the work</user_query>"}]}
+            }) + "\n")
+            cursor_item = api.read_native_executions("cursor", home, NOW)[0]
+            self.assertEqual(cursor_item.record.title, "Name the Cursor session")
+            self.assertFalse(any(api._NV_ID_NAME.fullmatch(item.record.title)
+                                 for item in (codex_item, claude_item, cursor_item)))
+
+    def test_prompt_name_strips_markdown_and_truncates_without_returning_ids(self):
+        api = self.api()
+        self.assertEqual(api._nv_prompt_name("# **A short name**\nmore"), "A short name")
+        name = api._nv_prompt_name("`" + "long name " * 8 + "`")
+        self.assertEqual((len(name), name[-1]), (60, "…"))
+        self.assertEqual(api._nv_prompt_name("ses_0123456789abcdef"), "")
+
+    def test_codex_rollout_name_skips_codex_bootstrap_messages(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-real.jsonl", [
+                self.meta("real-thread"),
+                {"type": "response_item", "payload": {"type": "message", "role": "developer",
+                 "content": [{"type": "input_text", "text": "runtime developer message"}]}},
+                self.user("# AGENTS.md instructions for /project\n<INSTRUCTIONS>rules</INSTRUCTIONS>"),
+                self.user("<environment_context>cwd=/project</environment_context>"),
+                self.user("<skills_instructions>skills</skills_instructions>"),
+                self.user("<permissions instructions>permissions</permissions instructions>"),
+                self.user("Please make the worker names readable"),
+            ])
+            item = self.api().read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(item.record.title, "Please make the worker names readable")
+            self.assertEqual(item.brief, "# AGENTS.md instructions for /project\n<INSTRUCTIONS>rules</INSTRUCTIONS>")
+
+    def test_codex_thread_name_wins_over_rollout_prompt(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-indexed.jsonl", [
+                self.meta("indexed-thread"), self.user("Do the real task"),
+            ])
+            index = Path(home) / ".codex/session_index.jsonl"
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_text(json.dumps({"id": "indexed-thread", "thread_name": "Indexed real title"}) + "\n")
+            item = self.api().read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(item.record.title, "Indexed real title")
+
+    def test_launcher_boilerplate_prompts_are_not_names(self):
+        api = self.api()
+        prompts = (
+            "Do the task in your task file. Follow it exactly.",
+            "Do the task in your system prompt. Write /home/user/output.md",
+            "Do the review in your task file. Follow it exactly.",
+            "Read BRIEF.md in the current directory and do exactly what it says.",
+            '"Read BRIEF.md in the current directory and do exactly what it says."',
+            "Follow it exactly",
+            "Read NOTES.md and follow it exactly",
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(api._nv_prompt_name(prompt), "")
+
+    def test_stage_report_path_names_launcher_prompt(self):
+        api = self.api()
+        self.assertEqual(
+            api._nv_prompt_name("Do the review in your task file: .stage/review/briefs/cache-fix.md"),
+            "cache-fix (review)",
+        )
+        self.assertEqual(
+            api._nv_prompt_name("Do the task in your system prompt: .stage/run-a/report-task/REPORT.md"),
+            "report-task (run-a)",
+        )
+
+    def test_uninformative_prompt_falls_back_to_model_cwd_and_local_time(self):
+        api = self.api()
+        from model import ExecutionRecord
+        record = ExecutionRecord("id", harness="claude", native_id="native-id", model="gpt-6-luna",
+                                 cwd="/tmp/project-name", started=NOW)
+        expected = f"GPT-6 Luna · project-name · {datetime.fromtimestamp(NOW).strftime('%H:%M')}"
+        self.assertEqual(api._nv_session_name(record, "Read BRIEF.md and follow it exactly"), expected)
+        self.assertEqual(api._nv_session_name(record, "Read BRIEF.md and follow it exactly",
+                                             "Read BRIEF.md and follow it exactly"), expected)
+
+    def test_fallback_name_from_an_earlier_scan_gives_way_to_a_later_prompt(self):
+        api = self.api()
+        from model import ExecutionRecord
+        record = ExecutionRecord("id", harness="claude", native_id="native-id", model="gpt-6-luna",
+                                 cwd="/tmp/project-name", started=NOW)
+        record.title = api._nv_session_name(record, "")
+        self.assertTrue(record.title.startswith("GPT-6 Luna · project-name · "))
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "Fix the login redirect")
+        record.cwd, record.model = "/tmp/other-dir", "claude-opus-5-5"   # later lines fill in cwd and model
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "Fix the login redirect")
+        record.title = "My custom title"
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "My custom title")
+
+    def test_codex_unchanged_sessions_do_not_reparse_for_names(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            for i in range(70):
+                sid = f"thread-{i}"
+                self.codex_file(home, f"rollout-{i}.jsonl", [self.meta(sid), self.user(f"Task {i}")])
+            from codexread import read_codex_prompt_prefix
+            with mock.patch("codexread.read_codex_prompt_prefix", wraps=read_codex_prompt_prefix) as reader:
+                api.read_native_executions("codex", home, NOW)
+                first_count = reader.call_count
+                api.read_native_executions("codex", home, NOW)
+                self.assertEqual(first_count, 70)
+                self.assertEqual(reader.call_count, first_count)
+
+    def test_codex_invalid_utf8_index_does_not_abort_scan(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-good.jsonl", [self.meta("good"), self.user("A readable task")])
+            index = Path(home) / ".codex/session_index.jsonl"
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_bytes(b"\xff\n" + json.dumps({"id": "good", "thread_name": "Still works"}).encode() + b"\n")
+            self.assertEqual(api.read_native_executions("codex", home, NOW)[0].record.title, "Still works")
+
+    def test_codex_title_index_is_cached_and_oversized_lines_are_skipped(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            index = Path(home) / ".codex/session_index.jsonl"
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_bytes(b"{" + b"x" * (api._NV_CODEX_INDEX_LINE_MAX + 1) + b"}\n"
+                             + json.dumps({"id": "ok", "thread_name": "Cached title"}).encode() + b"\n")
+            original_open = Path.open
+            api._nv_codex_index_cache.pop(str(index), None)
+            with mock.patch.object(Path, "open", autospec=True, side_effect=original_open) as open_file:
+                first = api._nv_codex_thread_names(home)
+                second = api._nv_codex_thread_names(home)
+                self.assertEqual(open_file.call_count, 1)
+            self.assertEqual(first, {"ok": "Cached title"})
+            self.assertIs(first, second)
+
+    def test_codex_launcher_title_uses_filtered_full_prompt_and_rejects_id_fallback(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-long.jsonl", [
+                self.meta("launcher"), self.user("# AGENTS.md instructions for /project\n<INSTRUCTIONS>rules</INSTRUCTIONS>"),
+                self.user("Do the review in your task file: .stage/review/briefs/cache-fix.md")])
+            (Path(home) / ".codex/session_index.jsonl").write_text("", encoding="utf-8")
+            item = api.read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(item.record.title, "cache-fix (review)")
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-id.jsonl", [
+                self.meta("01234567-89ab-cdef-0123-456789abcdef"), self.user("01234567-89ab-cdef-0123-456789abcdef")])
+            item = api.read_native_executions("codex", home, NOW)[0]
+            self.assertNotEqual(item.record.title, "codex 01234567")
+            self.assertNotRegex(item.record.title, r"(?i)^codex [0-9a-f]{8}$")
+
+    def test_cursor_unlinked_marker_survives_long_prompt_name(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            transcript = Path(home) / ".cursor/projects/p/agent-transcripts/sid/sid.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(json.dumps({"role": "user", "message": {"content": [
+                {"type": "text", "text": "A" * 90}]}}) + "\n", encoding="utf-8")
+            item = api.read_native_executions("cursor", home, NOW)[0]
+            self.assertTrue(item.record.title.endswith(" (unlinked)"))
+            self.assertLessEqual(len(item.record.title), 60)
+
+        with tempfile.TemporaryDirectory() as home:
+            transcript = Path(home) / ".cursor/projects/p/agent-transcripts/sid/sid.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(json.dumps({"role": "user", "message": {"content": [
+                {"type": "text", "text": "<user_query>Short task</user_query>"}]}}) + "\n", encoding="utf-8")
+            item = api.read_native_executions("cursor", home, NOW)[0]
+            self.assertEqual(item.record.title, "Short task (unlinked)")
+
+        with tempfile.TemporaryDirectory() as home:
+            for sid in ("one", "two", "three"):
+                transcript = Path(home) / f".cursor/projects/p/agent-transcripts/{sid}/{sid}.jsonl"
+                transcript.parent.mkdir(parents=True)
+                query = "<user_query>" + "A" * 90 + "</user_query>"
+                events = [
+                    {"role": "user", "message": {"content": [{"type": "text", "text": query}]}},
+                    {"role": "assistant", "message": {"content": [{"type": "tool_use", "name": "Task",
+                                                                          "input": {"prompt": "A" * 90}}]}},
+                ]
+                transcript.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+            items = api.read_native_executions("cursor", home, NOW)
+            self.assertEqual(len(items), 3)
+            self.assertTrue(all(item.record.title.endswith(" (ambiguous, unlinked)") for item in items))
+
+    def test_unknown_start_fallback_uses_source_mtime_before_native_id_suffix(self):
+        from model import ExecutionRecord
+        api = self.api()
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "transcript.jsonl"
+            source.write_text("{}\n")
+            stamp = NOW - 600
+            os.utime(source, (stamp, stamp))
+            first = ExecutionRecord("one", harness="claude", native_id="abcdef123456", cwd="",
+                                    source=str(source), started=0)
+            expected = datetime.fromtimestamp(stamp).strftime("%H:%M")
+            self.assertTrue(api._nv_session_name(first, "").endswith(expected))
+            source.unlink()
+            second = ExecutionRecord("two", harness="claude", native_id="987654321abc", cwd="", started=0)
+            self.assertTrue(api._nv_session_name(second, "").endswith("987654"))
+
+    def test_codex_name_fallback_does_not_reuse_stale_derived_title(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            self.codex_file(home, "rollout-stale.jsonl", [self.meta("stale"),
+                self.user("# AGENTS.md instructions\n<INSTRUCTIONS>rules</INSTRUCTIONS>"),
+                self.user("Read BRIEF.md and follow it exactly")])
+            index = Path(home) / ".codex/session_index.jsonl"
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_text(json.dumps({"id": "stale", "thread_name": "Explicit name"}) + "\n")
+            first = api.read_native_executions("codex", home, NOW)[0]
+            self.assertEqual(first.record.title, "Explicit name")
+            index.write_text("")
+            second = api.read_native_executions("codex", home, NOW)[0]
+            self.assertNotEqual(second.record.title, "Explicit name")
+            self.assertNotIn("rules", second.record.title)
+
+    def test_codex_name_reads_only_a_bounded_prefix(self):
+        from codexread import read_codex_prompt_prefix
+        with tempfile.TemporaryDirectory() as home:
+            path = self.codex_file(home, "rollout-prefix.jsonl", [
+                self.meta("prefix"), self.user("# AGENTS.md instructions"), self.user("# The real title"),
+            ])
+            with path.open("ab") as stream:
+                event = json.dumps({"type": "event_msg", "payload": {"type": "noise", "text": "x" * 1000}}) + "\n"
+                stream.write((event * 1000).encode())
+            self.assertEqual(read_codex_prompt_prefix(str(path), max_bytes=1024), ["# The real title"])
+
+    def test_codex_prefix_reader_stops_at_byte_limit(self):
+        from codexread import read_codex_prompt_prefix
+        with tempfile.TemporaryDirectory() as home:
+            path = self.codex_file(home, "rollout-limited.jsonl", [self.meta("limited")])
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"type": "event_msg", "payload": {"type": "noise", "text": "x" * 2000}}) + "\n")
+                stream.write(json.dumps(self.user("# Too far")) + "\n")
+            self.assertEqual(read_codex_prompt_prefix(str(path), max_bytes=1024), [])
+
+    def test_codex_prefix_finds_prompt_after_large_realistic_preamble(self):
+        from codexread import read_codex_prompt_prefix
+        with tempfile.TemporaryDirectory() as home:
+            events = [self.meta("large-preamble")]
+            # Several large developer messages model the injected system and repo instructions.
+            for _ in range(3):
+                events.append({"type": "response_item", "payload": {"type": "message", "role": "developer",
+                    "content": [{"type": "input_text", "text": "developer instructions " + "x" * 99000}]}})
+            events.extend([
+                self.user("# AGENTS.md instructions\n" + "rules " * 3000),
+                self.user("<environment_context>\n" + "cwd=/tmp/task " * 3000 + "</environment_context>"),
+                self.user("# Real rollout name"),
+            ])
+            path = self.codex_file(home, "rollout-large-prefix.jsonl", events)
+            self.assertGreater(path.stat().st_size, 300_000)
+            self.assertEqual(read_codex_prompt_prefix(str(path)), ["# Real rollout name"])
+
+    def test_codex_prefix_stops_at_two_mib_without_a_real_prompt(self):
+        import codexread
+        from codexread import read_codex_prompt_prefix
+        with tempfile.TemporaryDirectory() as home:
+            events = [self.meta("no-prompt")]
+            for _ in range(170):
+                events.append({"type": "response_item", "payload": {"type": "message", "role": "developer",
+                    "content": [{"type": "input_text", "text": "preamble " + "x" * 18000}]}})
+            path = self.codex_file(home, "rollout-no-prompt.jsonl", events)
+            parsed = 0
+            original = codexread._crd_item
+
+            def count_items(state, obj):
+                nonlocal parsed
+                parsed += 1
+                return original(state, obj)
+
+            with mock.patch("codexread._crd_item", side_effect=count_items):
+                self.assertEqual(read_codex_prompt_prefix(str(path)), [])
+            self.assertGreater(parsed, 80)
+            self.assertLess(parsed, len(events))
+
+    def test_prompt_name_is_bounded_redacted_and_skips_assignment_headers(self):
+        api = self.api()
+        self.assertEqual(api._nv_prompt_name("Job: review\nModel: luna\nEffort: high\n# Actual task"), "Actual task")
+        self.assertEqual(api._nv_prompt_name("Builder: luna\nMode: build\n# Actual task"), "Actual task")
+        self.assertIn("…", api._nv_prompt_name("Use sk-" + "a" * 32 + " for this task"))
+        self.assertNotIn("sk-", api._nv_prompt_name("Use sk-" + "a" * 32 + " for this task"))
+        for token in ("ghp_" + "a" * 30, "AKIA" + "A" * 16, "Bearer secret-value", "f" * 30, "Q" * 30):
+            self.assertNotIn(token, api._nv_prompt_name(f"Use {token} now"))
+        self.assertLessEqual(len(api._nv_prompt_name("<command-x>" * 30000 + "# bounded")), 60)
+
+    def test_secret_masking_happens_before_name_truncation(self):
+        api = self.api()
+        for secret in ("sk-" + "a" * 32, "ghp_" + "a" * 30, "AKIA" + "A" * 16):
+            with self.subTest(secret=secret[:4]):
+                name = api._nv_prompt_name("x" * 55 + secret)
+                self.assertNotIn(secret[:8], name)
+
+    def test_claude_custom_title_overrides_ai_title(self):
+        with tempfile.TemporaryDirectory() as home:
+            folder = Path(home) / ".claude/projects/p"
+            folder.mkdir(parents=True)
+            path = folder / "named.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in [
+                {"type": "ai-title", "sessionId": "claude-title-1234", "aiTitle": "AI title"},
+                {"type": "custom-title", "sessionId": "claude-title-1234", "customTitle": "My title"},
+                {"type": "user", "sessionId": "claude-title-1234", "cwd": "/tmp",
+                 "message": {"role": "user", "content": "Do the thing"}},
+            ]) + "\n")
+            item = self.api().read_native_executions("claude", home, NOW)[0]
+            self.assertEqual(item.record.title, "My title")
+
+    def test_opencode_blank_and_generated_titles_use_prompt_and_keep_identity(self):
+        api = self.api()
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home) / ".local/share/opencode/opencode.db"
+            path.parent.mkdir(parents=True)
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE session_v2 (id TEXT, parent_id TEXT, directory TEXT, title TEXT, model TEXT, time_created INT, time_updated INT, time_idle INT, idle_outcome TEXT, time_archived INT)")
+            conn.execute("CREATE TABLE session_message (session_id TEXT, type TEXT, seq INT, data TEXT)")
+            rows = (("ses_root", None, "", "Goal: Session root"),
+                    ("ses_blank", "ses_root", "", "Goal: Name the OpenCode run\nFurther details"),
+                    ("ses_generated", "ses_root", "Shell command request title generation",
+                     "Goal: Name the OpenCode run\nFurther details"),
+                    ("ses_orphan", "ses_missing", "", "Goal: Orphan session"))
+            for sid, parent, title, prompt in rows:
+                conn.execute("INSERT INTO session_v2 VALUES (?,?, '/tmp',?,'{}',?,?,NULL,NULL,NULL)",
+                             (sid, parent, title, NOW * 1000, NOW * 1000))
+                conn.execute("INSERT INTO session_message VALUES (?, 'user', 1, ?)",
+                             (sid, json.dumps({"text": prompt})))
+            conn.commit()
+            conn.close()
+            items = api.read_native_executions("opencode", home, NOW)
+            self.assertEqual({item.record.title for item in items},
+                             {"Name the OpenCode run", "Session root", "Orphan session"})
+            workers = [collect._co_execution_worker(item, NOW, False) for item in items
+                       if item.record.native_id in ("ses_blank", "ses_generated")]
+            self.assertEqual({worker.name for worker in workers}, {"Name the OpenCode run"})
+            self.assertEqual({worker.native_id for worker in workers}, {"ses_blank", "ses_generated"})
+            self.assertEqual(len({worker.key for worker in workers}), 2)
+            self.assertFalse(any(api._NV_ID_NAME.fullmatch(worker.name) for worker in workers))
+            collector = collect.GlobalCollector([], quota=False)
+            stages = collector._co_execution_stages(items, NOW, True)
+            root = next(stage for stage in stages if stage.native_id == "ses_root")
+            self.assertEqual(root.session_name, "Session root")
+            self.assertEqual(len(root.snap.workers), 2)
+            orphan = next(stage for stage in stages if stage.session_name == "Orphan session")
+            self.assertEqual(orphan.session_name, "Orphan session")
 
     def test_codex_completion_without_timestamp_is_still_read(self):
         with tempfile.TemporaryDirectory() as home:

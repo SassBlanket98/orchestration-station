@@ -10,6 +10,7 @@ import unittest
 from datetime import UTC, datetime
 from unittest import mock
 
+import app
 import collect
 from logparse import LogState
 from model import (
@@ -25,6 +26,7 @@ from model import (
     QuotaAccount,
     Snapshot,
     Stage,
+    UIState,
     Worker,
 )
 
@@ -58,6 +60,7 @@ def add_worker(stage: str, mtime: float, name: str = "w", pid: int = DEAD_PID) -
     # the worker's own dir keeps Collector from treating its pid file as a service
     os.makedirs(os.path.join(stage, name), exist_ok=True)
     write(os.path.join(stage, name + ".pid"), str(pid), mtime)
+    write(os.path.join(stage, name + ".model"), "test-model", mtime)
     write(os.path.join(stage, name + ".log"), "", mtime)
 
 
@@ -546,6 +549,22 @@ class CollectorLifetimeTest(Base):
         self.assertEqual(g.detail(stage, "w", "report"), ["## Summary", "- done"])
         self.assertEqual(g.detail("/nowhere/.stage", "w", "report"), [])
         self.assertEqual(g.detail(stage, "w", "live"), [])
+
+    def test_detail_resolves_worker_key_before_calling_stage_collector(self) -> None:
+        stage_path = os.path.join(self.root, "p", ".stage")
+        worker = Worker("w1", RUNNING, home="/other/project/.stage")
+        g = self.make()
+        collector = mock.Mock()
+        collector.detail.return_value = ["detail"]
+        g._co_collectors[worker.home] = collector
+        g._co_last_stages = [Stage(path=stage_path, dir=stage_path, label="p", snap=Snapshot(workers=[worker]))]
+
+        ui = UIState(tab="brief")
+        app._ap_load_global_detail(ui, g, stage_path, worker.key)
+
+        self.assertEqual(ui.detail_text, ["detail"])
+
+        collector.detail.assert_called_once_with("w1", "brief")
 
     def test_one_quota_reader_marks_in_use(self) -> None:
         stage = make_stage(self.root, "p")

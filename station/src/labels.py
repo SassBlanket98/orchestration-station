@@ -7,6 +7,30 @@ with only the prefix removed. Versions are never invented: ``gpt-6-sol`` is ``GP
 
 import re
 
+# One source for the short harness labels shown on session and worker rows.
+HARNESS_LABELS = {
+    ("claude", "personal"): "CC·P",
+    ("claude", "work"): "CC·W",
+    ("codex", "personal"): "Codex",
+    ("t3", "personal"): "T3",
+    ("opencode", "personal"): "OCode",
+    ("openclaw", "openclaw"): "OClaw",
+    ("cursor", "personal"): "Cursr",
+}
+
+
+def harness_label(harness: str, account: str = "personal") -> str:
+    """Return the configured short harness label, or an empty string when unknown."""
+    harness, account = harness.lower(), account.lower()
+    if harness == "claude" and account not in ("personal", "work"):
+        return "CC"
+    return HARNESS_LABELS.get((harness, account), "")
+
+
+def harness_for_label(label: str) -> str:
+    """Reverse the shared label table for legacy rows whose harness field is absent."""
+    return next((harness for (harness, _), value in HARNESS_LABELS.items() if value == label), "")
+
 _PREFIXES = ("opencode-go/", "opencode/", "anthropic/", "cursor-")
 
 # Claude lead models arrive as the short form ``sonnet-5.5``; the version is read from the id, never guessed.

@@ -478,6 +478,7 @@ BEFORE_STEP = {"kind", "text", "tool", "ts"}
 # the additive keys
 NEW_STAGE = {"level_tag", "display_name", "lead_ctx_window", "lead_tokens", "lead_cost", "lead_tools", "lead_tool_bins", "work", "vitals", "turns"}
 NEW_ROW = {"tool_bins", "ctx_window", "level_tag", "flags", "failure"}
+WORKER_IDENTITY_KEYS = {"key", "stage", "parent_key"}
 NEW_STEP = {"dur", "outcome"}
 BIN_COUNT = 15
 
@@ -544,9 +545,9 @@ class OpsKeySetTests(unittest.TestCase):
         stage = webdata.global_payload(gs)["stages"][0]
         detail_stage = webdata.stage_payload(gs, "/p/0/.stage")
         self.assertEqual(set(stage), BEFORE_STAGE | NEW_STAGE - {"turns"} | {"turns_summary"})
-        self.assertEqual(set(stage["workers"][0]), BEFORE_ROW | NEW_ROW)
+        self.assertEqual(set(stage["workers"][0]), BEFORE_ROW | NEW_ROW | WORKER_IDENTITY_KEYS)
         self.assertEqual(set(detail_stage), BEFORE_STAGE_PAYLOAD | NEW_STAGE | {"ops"})
-        self.assertEqual(set(detail_stage["workers_full"][0]), BEFORE_WORKER_FULL | NEW_ROW)
+        self.assertEqual(set(detail_stage["workers_full"][0]), BEFORE_WORKER_FULL | NEW_ROW | WORKER_IDENTITY_KEYS)
         self.assertEqual(set(detail_stage["reviews"]), BEFORE_REVIEWS)
         detail = webdata.execution_detail(gs.stages[0].snap.workers, "x0-0")
         self.assertEqual(set(detail), BEFORE_DETAIL)

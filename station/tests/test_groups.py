@@ -164,6 +164,7 @@ class CollectorGroups(unittest.TestCase):
 
     def worker(self, name: str, start: float, job: str) -> None:
         self.write(f"{name}.pid", "4194304", start)          # beyond pid_max: never live
+        self.write(f"{name}.model", "test-model", start)
         self.write(f"{name}.log", "line\n", start + 5)
         self.write(f"briefs/{name}.md", f"# {name}\nJob: {job}\n", start)
 

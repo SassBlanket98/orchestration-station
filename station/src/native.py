@@ -6,7 +6,7 @@ Supported stores (all read-only):
 - OpenCode: ~/.local/share/opencode/opencode.db (session_v2 + session_message).
 - OpenClaw (openclaw agent only): ~/.openclaw/agents/openclaw/agent/openclaw-agent.sqlite session_nodes.entry_json.
 - Cursor: ~/.cursor/projects/*/agent-transcripts/*/*.jsonl, with cwd/times from only the
-  schemaVersion, createdAtMs, updatedAtMs and cwd fields of ~/.cursor/chats/*/*/meta.json.
+  schemaVersion, createdAtMs, updatedAtMs, cwd and optional model fields of ~/.cursor/chats/*/*/meta.json.
   store.db is opaque and never read. Task children match an exact <user_query> prompt after
   CRLF normalization and outer whitespace trimming; ambiguous matches remain unlinked.
 """
@@ -21,6 +21,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from labels import display_model
 from model import (
     ACTIVE_S,
     QUIET_S,
@@ -44,7 +45,14 @@ _NV_STORED_CAP = 1024 * 1024          # max UTF-8 bytes kept for a stored brief 
 _NV_TRUNC_MARK = "\n[truncated]"
 _NV_CURSOR_HEAD = 64 * 1024
 _NV_CURSOR_TAIL = 64 * 1024
+_NV_NAME_LIMIT = 60
 _nv_cursor_cache: dict[str, dict] = {}
+_NV_NAME_INPUT_LIMIT = 2000
+_NV_CODEX_NAME_CACHE_MAX = 4096
+_nv_codex_name_cache: dict[str, tuple[int, int, str]] = {}
+_nv_codex_index_cache: dict[str, tuple[int, int, dict[str, str]]] = {}
+_NV_CODEX_INDEX_MAX = 8 * 1024 * 1024
+_NV_CODEX_INDEX_LINE_MAX = 64 * 1024
 # Metrics parsed by the native scan, readable by the collector without touching the record: (harness, native id) -> dict.
 _nv_metrics: dict[tuple[str, str], dict] = {}
 _nv_metric_paths: dict[tuple[str, str], str] = {}
@@ -101,6 +109,149 @@ def _nv_goal(brief: str) -> tuple[str, str]:
     if match:
         return match.group(1).strip(), "native task"
     return " ".join(brief.split())[:240], "native excerpt"
+
+
+_NV_ID_NAME = re.compile(r"(?:[0-9a-f]{8}-[0-9a-f-]{27}|ses_[a-z0-9_-]+|[0-9a-f]{24,}|[a-z]+-[0-9a-f]{8,})", re.IGNORECASE)
+_NV_NAME_PLACEHOLDERS = {"shell command request title generation", "new session", "untitled", "session",
+                         "cursor task", "cursor task (unlinked)", "cursor task (ambiguous, unlinked)"}
+_NV_STAGE_NAME = re.compile(r"\.stage/([^/\s]+)/([^/\s]+)/REPORT\.md|\.stage/([^/\s]+)/briefs/([^/\s]+)\.md", re.IGNORECASE)
+_NV_BOILERPLATE_PREFIXES = ("do the task in your", "do the review in your", "read brief.md",
+                            "follow it exactly")
+
+
+def _nv_stage_prompt_name(text: str) -> str:
+    match = _NV_STAGE_NAME.search(text)
+    if not match:
+        return ""
+    directory, name = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+    return _nv_mask_name(f"{name} ({directory})")
+
+
+def _nv_boilerplate(text: str) -> bool:
+    normalized = " ".join(text.split()).strip(" \t\r\n\"'`*#")
+    lowered = normalized.casefold()
+    if lowered.startswith(_NV_BOILERPLATE_PREFIXES):
+        return True
+    words = normalized.split()
+    return (len(words) < 12 and bool(re.search(r"\b(?:read|follow)\b", lowered))
+            and bool(re.search(r"\b(?:[\w.-]+\.(?:md|txt|markdown)|file|prompt|task)\b", lowered)))
+
+
+def _nv_prompt_name(text: str) -> str:
+    """A short display name from the first real prompt line, excluding harness wrappers and ids."""
+    text = text[:_NV_NAME_INPUT_LIMIT]
+    text = re.sub(r"<user_query>\s*(.*?)\s*</user_query>", r"\1", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<(?:system-reminder|environment_context|command-[^>]+)>.*?</(?:system-reminder|environment_context|command-[^>]+)>",
+                  " ", text, flags=re.IGNORECASE | re.DOTALL)
+    if _nv_boilerplate(text):
+        return _nv_stage_prompt_name(text)
+    for raw in text.splitlines():
+        line = re.sub(r"<[^>]+>", " ", raw).strip()
+        if not line or line in ("---", "***"):
+            continue
+        if re.match(r"^(?:AGENTS\.md\b|<environment_context>|<system-reminder>|"
+                    r"(?:Job|Model|Effort|Builder|Mode):|Current date:)", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^\s*(?:#{1,6}\s*|[-*+]\s+|>\s*)+", "", line)
+        if re.match(r"^AGENTS\.md\b", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^(?:Goal|Task|Request):\s*", "", line, flags=re.IGNORECASE)
+        line = re.sub(r"^[#*`'\"“”‘’]+|[#*`'\"“”‘’]+$", "", line).strip()
+        line = " ".join(line.split())
+        codex_fallback = re.match(r"^codex\s+[0-9a-f]{8}$", line, re.IGNORECASE)
+        if not line or _NV_ID_NAME.fullmatch(line) or codex_fallback or re.match(r"^<[^>]+>$", line):
+            continue
+        line = _nv_mask_name(line)
+        if len(line) > _NV_NAME_LIMIT:
+            line = line[:_NV_NAME_LIMIT - 1].rstrip() + "…"
+        return line
+    return ""
+
+
+def _nv_explicit_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split()).strip()
+    if (not text or text.casefold() in _NV_NAME_PLACEHOLDERS or _NV_ID_NAME.fullmatch(text)
+            or re.match(r"^codex\s+[0-9a-f]{8}$", text, re.IGNORECASE)):
+        return ""
+    if _nv_boilerplate(text):
+        return _nv_stage_prompt_name(text)
+    return _nv_prompt_name(text) or _nv_mask_name(text)[:_NV_NAME_LIMIT]
+
+
+_NV_SECRET_NAME = re.compile(
+    r"(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9]{12,}|AKIA[0-9A-Z]{16}|"
+    r"Bearer\s+\S+|[0-9a-f]{24,}|[A-Za-z0-9+/]{24,}={0,2})",
+    re.IGNORECASE,
+)
+
+
+def _nv_mask_name(text: str) -> str:
+    return _NV_SECRET_NAME.sub("…", text)
+
+
+_nv_fallback_names: set[str] = set()   # names this process generated; an earlier scan's fallback is not a real title
+
+
+def _nv_session_name(record: ExecutionRecord, prompt: str, explicit: object = "") -> str:
+    title = "" if record.title in _nv_fallback_names else record.title
+    named = (_nv_explicit_name(explicit) or _nv_explicit_name(title) or _nv_prompt_name(prompt))
+    if named:
+        return _nv_mask_name(named)
+    fallback = _nv_fallback_name(record)
+    _nv_fallback_names.add(fallback)
+    return fallback
+
+
+def _nv_fallback_name(record: ExecutionRecord) -> str:
+    model = display_model(record.model) or record.harness.capitalize() or "Worker"
+    cwd = os.path.basename(record.cwd.rstrip("/")) or "session"
+    started = record.started
+    if not started and record.source:
+        try:
+            started = Path(record.source).stat().st_mtime
+        except OSError:
+            pass
+    start = datetime.fromtimestamp(started).strftime("%H:%M") if started else "--:--"
+    if not started:
+        identity = record.native_id or record.execution_id
+        fallback = f"{model} · {cwd} · {identity[:6]}" if identity else f"{model} · {cwd} · {start}"
+        return _nv_mask_name(fallback)
+    return _nv_mask_name(f"{model} · {cwd} · {start}")
+
+
+def _nv_codex_thread_names(home: str) -> dict[str, str]:
+    """Read Codex's session index title map, tolerating older/incomplete index rows."""
+    result: dict[str, str] = {}
+    path = Path(home) / ".codex/session_index.jsonl"
+    try:
+        stat = path.stat()
+        cached = _nv_codex_index_cache.get(str(path))
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            return cached[2]
+        with path.open("rb") as stream:
+            raw_index = stream.read(_NV_CODEX_INDEX_MAX + 1)
+        for raw_line in raw_index[:_NV_CODEX_INDEX_MAX].splitlines():
+            if len(raw_line) > _NV_CODEX_INDEX_LINE_MAX:
+                continue
+            try:
+                row = json.loads(raw_line.decode("utf-8", "replace"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("id", row.get("thread_id", ""))
+            title = _nv_explicit_name(row.get("thread_name"))
+            if isinstance(sid, str) and sid and title:
+                result[sid] = title
+    except OSError:
+        pass
+    else:
+        _nv_codex_index_cache[str(path)] = (stat.st_mtime_ns, stat.st_size, result)
+        while len(_nv_codex_index_cache) > _NV_CODEX_NAME_CACHE_MAX:
+            _nv_codex_index_cache.pop(next(iter(_nv_codex_index_cache)))
+    return result
 
 
 def _nv_sig(path: Path, start: int, length: int) -> str:
@@ -277,6 +428,13 @@ def _nv_apply(st: dict, obj: dict, family: str, account: str, path: Path) -> Non
         if st["record"] is None:
             return
     record = st["record"]
+    if family == "claude" and typ in ("ai-title", "custom-title"):
+        field = "customTitle" if typ == "custom-title" else "aiTitle"
+        title = _nv_explicit_name(obj.get(field))
+        priority = 2 if typ == "custom-title" else 1
+        if title and priority >= st.get("title_priority", 0):
+            record.title = title
+            st["title_priority"] = priority
     record.activity = max(record.activity, stamp)
     if (family == "claude" and record.role == "lead" and
             (obj.get("entrypoint") in ("sdk-cli", "sdk-ts") or obj.get("promptSource") == "sdk")):
@@ -321,7 +479,8 @@ def _nv_apply(st: dict, obj: dict, family: str, account: str, path: Path) -> Non
     if isinstance(message, dict):
         role = message.get("role", typ)
         text = _nv_text(message.get("content", ""))
-        if role == "user" and text and not st["brief"] and obj.get("isMeta") is not True:
+        if (role == "user" and text and not st["brief"] and obj.get("isMeta") is not True
+                and not (family == "claude" and typ == "system")):
             st["brief"] = _nv_cap(text)
         if role == "user" and family == "claude":
             st["result"] = ""
@@ -413,6 +572,7 @@ def _nv_jsonl(path: Path, family: str, account: str, now: float) -> ExecutionEvi
         if family == "claude":
             _nv_claude_finish(st, stat.st_mtime, now)
         record.goal, record.purpose_source = _nv_goal(st["brief"])
+        record.title = _nv_session_name(record, st["brief"])
         if st["oversized"]:
             record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
         _nv_metrics_put(record.harness, record.native_id, _nv_record_metrics(record, st), path)
@@ -479,6 +639,9 @@ def _nv_opencode(home: str) -> list[ExecutionEvidence]:
                     pass
                 brief, over_user = _nv_db_text(conn, sid, "user")
                 result, over_asst = _nv_db_text(conn, sid, "assistant")
+                if (isinstance(title, str) and title.strip().casefold() in _NV_NAME_PLACEHOLDERS
+                        and not brief.strip()):
+                    continue
                 if idle and _nv_time(idle) >= record.activity:
                     record.state = "finished" if parent else "idle"
                     if parent:
@@ -486,6 +649,7 @@ def _nv_opencode(home: str) -> list[ExecutionEvidence]:
                         record.outcome = {"succeeded": "success", "failed": "failed", "error": "failed",
                                           "interrupted": "cancelled"}.get(outcome or "", "unknown")
                 record.goal, record.purpose_source = _nv_goal(brief)
+                record.title = _nv_session_name(record, brief)
                 if over_user or over_asst:
                     record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
                 record.output_available = bool(result)
@@ -558,6 +722,55 @@ def _nv_cursor_prompt(text: str) -> str:
     return text.replace("\r\n", "\n").strip()
 
 
+_NV_CURSOR_VERBOSE_MODEL = re.compile(r"^\s*claude\s+(haiku|sonnet|opus)\s+(\d+)\.(\d+)\b", re.IGNORECASE)
+
+
+def _nv_cursor_model_value(raw: object) -> str:
+    """Normalize Cursor's verbose Claude selection, preserving all unknown model strings verbatim."""
+    if not isinstance(raw, str):
+        return ""
+    match = _NV_CURSOR_VERBOSE_MODEL.match(raw)
+    if match:
+        return f"claude-{match[1].lower()}-{match[2]}-{match[3]}"
+    return raw
+
+
+def _nv_cursor_event_model(obj: dict) -> str:
+    """Read Cursor's per-message model, then explicit event/message model fields."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            options = block.get("providerOptions")
+            cursor = options.get("cursor") if isinstance(options, dict) else None
+            if isinstance(cursor, dict) and isinstance(cursor.get("modelName"), str):
+                return cursor["modelName"]
+    for container in (obj, obj.get("message")):
+        if isinstance(container, dict) and isinstance(container.get("model"), str):
+            return container["model"]
+    return ""
+
+
+def _nv_cursor_tool_model(obj: dict) -> str:
+    """Read a tool-input model only as a fallback when the chat reports none."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            data = block.get("input")
+            if not isinstance(data, dict):
+                continue
+            for candidate in (data.get("model"),
+                              data.get("arguments", {}).get("model") if isinstance(data.get("arguments"), dict) else None):
+                if isinstance(candidate, str):
+                    return candidate
+    return ""
+
+
 def _nv_cursor_blocks(obj: dict) -> list[dict]:
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -580,7 +793,7 @@ def _nv_cursor_file(path: Path) -> dict | None:
                 st = None
         if st is None:
             st = {"ino": stat.st_ino, "offset": 0, "brief": "", "prompts": set(), "oversized": False,
-                  "started": 0.0}
+                  "started": 0.0, "model": "", "model_fallback": ""}
         with path.open("rb") as stream:
             stream.seek(st["offset"])
             for begin, raw, complete in _nv_lines(stream, MAX_ARTIFACT_BYTES):
@@ -596,6 +809,10 @@ def _nv_cursor_file(path: Path) -> dict | None:
                     continue
                 if not isinstance(obj, dict):
                     continue
+                if not st["model"]:
+                    st["model"] = _nv_cursor_model_value(_nv_cursor_event_model(obj))
+                if not st["model_fallback"]:
+                    st["model_fallback"] = _nv_cursor_model_value(_nv_cursor_tool_model(obj))
                 if not st["started"]:
                     st["started"] = _nv_time(obj.get("timestamp"))
                 blocks = _nv_cursor_blocks(obj)
@@ -676,7 +893,7 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
             if chat_id in metadata:
                 metadata[chat_id] = {}  # duplicate identity is not trustworthy
                 continue
-            meta = {name: data.get(name) for name in ("schemaVersion", "createdAtMs", "updatedAtMs", "cwd")}
+            meta = {name: data.get(name) for name in ("schemaVersion", "createdAtMs", "updatedAtMs", "cwd", "model")}
             metadata[chat_id] = meta
             cwd = meta["cwd"]
             if isinstance(cwd, str) and os.path.isabs(cwd):
@@ -718,7 +935,10 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
         record = ExecutionRecord(execution_key("cursor", "personal", sid), harness="cursor", account="personal",
                                  native_id=sid, role="lead" if has_meta else "worker", cwd=cwd,
                                  title="" if has_meta else "Cursor task (unlinked)",
-                                 started=started, activity=activity, source=str(path))
+                                 started=started, activity=activity,
+                                 model=_nv_cursor_model_value(parsed["model"] or parsed["model_fallback"] or
+                                                              (meta.get("model") if has_meta else "")),
+                                 source=str(path))
         status = parsed["status"]
         if status:
             record.outcome = {"success": "success", "error": "failed", "failed": "failed",
@@ -731,6 +951,7 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
             if not has_meta:
                 record.ended = activity
         record.goal, record.purpose_source = _nv_goal(parsed["brief"])
+        record.title = _nv_session_name(record, parsed["brief"])
         if parsed["oversized"]:
             record.goal = f"{record.goal} {_NV_OVERSIZE_NOTE}".strip()
         record.output_available = bool(parsed["result"])
@@ -751,6 +972,16 @@ def _nv_cursor(home: str, now: float) -> list[ExecutionEvidence]:
                                    if parent.record.execution_id == record.parent_id), "")
         elif len(matches) > 1:
             record.title = "Cursor task (ambiguous, unlinked)"
+    for item in items:
+        record = item.record
+        if record.role == "worker" and not record.parent_id:
+            suffix = " (ambiguous, unlinked)" if "ambiguous" in record.title.casefold() else " (unlinked)"
+            record.title = ""
+            title = _nv_session_name(record, item.brief)
+            title_limit = _NV_NAME_LIMIT - len(suffix)
+            if len(title) > title_limit:
+                title = title[:title_limit - 1].rstrip() + "…"
+            record.title = title + suffix
     return items
 
 
@@ -1164,6 +1395,10 @@ def _nv_evict() -> None:
         del _nv_cache[key]
     for key in [key for key in _nv_cursor_cache if not os.path.lexists(key)]:
         del _nv_cursor_cache[key]
+    for key in [key for key in _nv_codex_name_cache if not os.path.lexists(key)]:
+        del _nv_codex_name_cache[key]
+    for key in [key for key in _nv_codex_index_cache if not os.path.lexists(key)]:
+        del _nv_codex_index_cache[key]
     for key in [key for key in _nv_metric_paths if not os.path.lexists(_nv_metric_paths[key])]:
         _nv_metrics.pop(key, None)
         del _nv_metric_paths[key]
@@ -1174,6 +1409,24 @@ def _nv_evict() -> None:
     for key in [key for key in _metric_opencode_db if not os.path.lexists(key)]:
         del _metric_opencode_db[key]
         _metric_opencode_tools.pop(key, None)
+
+
+def _nv_codex_reader():
+    """Resolve Codex's sibling reader in source-tree and joined single-file builds."""
+    try:
+        from codexread import read_codex_session
+    except ImportError:
+        return globals()["read_codex_session"]
+    return read_codex_session
+
+
+def _nv_codex_prompt_reader():
+    """Resolve Codex's bounded first-prompt reader in source-tree and joined builds."""
+    try:
+        from codexread import read_codex_prompt_prefix
+    except ImportError:
+        return globals()["read_codex_prompt_prefix"]
+    return read_codex_prompt_prefix
 
 
 def read_native_executions(harness: str, home: str, now: float) -> list[ExecutionEvidence]:
@@ -1195,6 +1448,52 @@ def read_native_executions(harness: str, home: str, now: float) -> list[Executio
         items = _nv_cursor(home, now)
     else:
         return []
+    if harness in ("codex", "t3"):
+        thread_names = _nv_codex_thread_names(home)
+        read_codex_prompt = _nv_codex_prompt_reader()
+        for item in items:
+            record = item.record
+            if record.harness == harness:
+                indexed = _nv_explicit_name(thread_names.get(record.native_id, ""))
+                derived = ""
+                try:
+                    stat = Path(record.source).stat()
+                    signature = (stat.st_mtime_ns, stat.st_size)
+                    cached = _nv_codex_name_cache.get(record.source)
+                    if cached and cached[:2] == signature:
+                        derived = cached[2]
+                    else:
+                        prompt = "\n".join(read_codex_prompt(record.source))
+                        if not prompt:
+                            prompt = re.sub(
+                                r"<(?:INSTRUCTIONS|user_instructions|skills_instructions|permissions instructions)"
+                                r"\b[^>]*>.*?</(?:INSTRUCTIONS|user_instructions|skills_instructions|permissions instructions)\s*>",
+                                " ", item.brief, flags=re.IGNORECASE | re.DOTALL)
+                        derived = _nv_prompt_name(prompt)
+                        _nv_codex_name_cache[record.source] = (*signature, derived)
+                        while len(_nv_codex_name_cache) > _NV_CODEX_NAME_CACHE_MAX:
+                            _nv_codex_name_cache.pop(next(iter(_nv_codex_name_cache)))
+                except OSError:
+                    pass
+                if indexed or derived:
+                    record.title = indexed or derived
+                else:
+                    record.title = ""
+                    record.title = _nv_session_name(record, "")
+    else:
+        for item in items:
+            record = item.record
+            marker = ""
+            if harness == "cursor" and record.role == "worker" and not record.parent_id:
+                marker = " (ambiguous, unlinked)" if "ambiguous" in record.title.casefold() else " (unlinked)"
+            if marker:
+                record.title = ""
+            title = _nv_session_name(record, item.brief)
+            if marker:
+                title_limit = _NV_NAME_LIMIT - len(marker)
+                if len(title) > title_limit:
+                    title = title[:title_limit - 1].rstrip() + "…"
+            record.title = title + marker
     items = [item for item in items if item.record.harness == harness]
     _nv_link_roots(items)
     return items
