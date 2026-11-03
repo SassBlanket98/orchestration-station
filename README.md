@@ -1,5 +1,8 @@
 # Orchestration Station
 
+[![CI](https://github.com/SassBlanket98/orchestration-station/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SassBlanket98/orchestration-station/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/SassBlanket98/orchestration-station)](LICENSE)
+
 Orchestration Station shows what your local AI orchestrators and their workers are doing. It reads plain files from `.stage/` directories. It has three parts:
 
 - `station`, a terminal dashboard. Run it with no flags for the interactive view, or ask it for a plain-text or JSON snapshot.
@@ -7,6 +10,14 @@ Orchestration Station shows what your local AI orchestrators and their workers a
 - The Station Dashboard, the web UI in `dashboard/`. It reads the station's API. Its own API uses port 8744. Its development server uses port 5191.
 
 The monitor reads files. It does not change stage files. Actions that start or stop workers are off unless you pass `--allow-actions`.
+
+The terminal dashboard, on generated demo data (`station --demo`):
+
+![The station terminal dashboard: running workers, a timeline and review findings](docs/img/station-tui.png)
+
+The Station Dashboard in a browser, on the same demo data:
+
+![The Station Dashboard web UI with one project and its workers](docs/img/dashboard.png)
 
 ## Requirements
 
