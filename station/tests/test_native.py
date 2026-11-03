@@ -186,6 +186,8 @@ class NativeEvidence(unittest.TestCase):
         record.title = api._nv_session_name(record, "")
         self.assertTrue(record.title.startswith("GPT-6 Luna · project-name · "))
         self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "Fix the login redirect")
+        record.cwd, record.model = "/tmp/other-dir", "claude-opus-5-5"   # later lines fill in cwd and model
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "Fix the login redirect")
         record.title = "My custom title"
         self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "My custom title")
 

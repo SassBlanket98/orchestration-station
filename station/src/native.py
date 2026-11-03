@@ -191,14 +191,22 @@ def _nv_mask_name(text: str) -> str:
     return _NV_SECRET_NAME.sub("…", text)
 
 
+_nv_fallback_names: set[str] = set()   # names this process generated; an earlier scan's fallback is not a real title
+
+
 def _nv_session_name(record: ExecutionRecord, prompt: str, explicit: object = "") -> str:
-    model = display_model(record.model) or record.harness.capitalize() or "Worker"
-    cwd = os.path.basename(record.cwd.rstrip("/")) or "session"
-    # A fallback name from an earlier scan is not a real title: let a prompt that arrived since replace it.
-    title = "" if record.title.startswith(f"{model} · {cwd} · ") else record.title
+    title = "" if record.title in _nv_fallback_names else record.title
     named = (_nv_explicit_name(explicit) or _nv_explicit_name(title) or _nv_prompt_name(prompt))
     if named:
         return _nv_mask_name(named)
+    fallback = _nv_fallback_name(record)
+    _nv_fallback_names.add(fallback)
+    return fallback
+
+
+def _nv_fallback_name(record: ExecutionRecord) -> str:
+    model = display_model(record.model) or record.harness.capitalize() or "Worker"
+    cwd = os.path.basename(record.cwd.rstrip("/")) or "session"
     started = record.started
     if not started and record.source:
         try:
