@@ -178,6 +178,17 @@ class NativeEvidence(unittest.TestCase):
         self.assertEqual(api._nv_session_name(record, "Read BRIEF.md and follow it exactly",
                                              "Read BRIEF.md and follow it exactly"), expected)
 
+    def test_fallback_name_from_an_earlier_scan_gives_way_to_a_later_prompt(self):
+        api = self.api()
+        from model import ExecutionRecord
+        record = ExecutionRecord("id", harness="claude", native_id="native-id", model="gpt-6-luna",
+                                 cwd="/tmp/project-name", started=NOW)
+        record.title = api._nv_session_name(record, "")
+        self.assertTrue(record.title.startswith("GPT-6 Luna · project-name · "))
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "Fix the login redirect")
+        record.title = "My custom title"
+        self.assertEqual(api._nv_session_name(record, "Fix the login redirect"), "My custom title")
+
     def test_codex_unchanged_sessions_do_not_reparse_for_names(self):
         api = self.api()
         with tempfile.TemporaryDirectory() as home:

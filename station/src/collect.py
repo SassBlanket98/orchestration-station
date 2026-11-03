@@ -4205,17 +4205,21 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
             continue
         by_key = {wk.key: wk for wk in workers}
         merged_children: set[int] = set()
+        rekeyed: dict[str, str] = {}   # folding a native id into a worker can change its key
         for child_key, parent_key in list(parent_of.items()):
             parent, child = by_key.get(parent_key), by_key.get(child_key)
             if _co_is_own_native_row(parent, child) and not any(
                     other_parent == parent_key and id(by_key.get(other)) in merged_children for other, other_parent in parent_of.items()):
                 # A dispatch worker's own native session, still running (its run record has no native id yet): one worker, not two.
+                old_key = parent.key
                 for field_name in ("execution_id", "account", "native_id", "parent_id", "root_id", "linkage", "outcome",
                                    "brief_text", "result_text", "purpose_source", "output_available"):
                     _co_fill_identity(parent, child, field_name)
                 if child.model and parent.state in LIVE_STATES:
                     parent.model = child.model   # the session's own model name is more exact than the brief's alias
                 merged_children.add(id(child))
+                if parent.key != old_key:
+                    rekeyed[old_key] = parent.key
         if merged_children:
             for key, parent_key in list(parent_of.items()):
                 if id(by_key.get(parent_key)) in merged_children:
@@ -4226,6 +4230,9 @@ def _co_nest_workers(stages: list[Stage], procs: dict[int, tuple[int, int, int, 
                     parent_of.pop(child_key, None)
             workers = [wk for wk in workers if id(wk) not in merged_children]
             stage.snap.workers = workers
+            if rekeyed:
+                parent_of = {rekeyed.get(key, key): rekeyed.get(parent_key, parent_key)
+                             for key, parent_key in parent_of.items()}
             if not parent_of:
                 continue
         for wk in workers:   # a loop of parents is cut at the worker that closes it
