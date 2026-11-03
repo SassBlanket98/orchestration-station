@@ -12,7 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "framer-motion": "^14.7.1",
+    "framer-motion": "^14.9.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
